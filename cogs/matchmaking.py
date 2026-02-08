@@ -302,24 +302,22 @@ class Matchmaking(commands.Cog):
         """Join the matchmaking queue."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /queue command")
 
-        # Defer response to avoid timeout
-        await ctx.defer(ephemeral=True)
-
+        # Add user to queue
         if self.queue.add_user(ctx.author):
-            # Update lobby and check threshold first
-            await self.update_lobby_display()
-            await self.check_matchmaking_threshold()
-
-            # Then send response
-            await ctx.followup.send(
+            # RESPOND IMMEDIATELY to avoid interaction timeout
+            await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(
                     "Joined Queue",
                     f"You have been added to the queue. Position: {self.queue.size()}"
                 ),
                 ephemeral=True
             )
+
+            # Then update lobby and check threshold AFTER responding
+            await self.update_lobby_display()
+            await self.check_matchmaking_threshold()
         else:
-            await ctx.followup.send(
+            await ctx.respond(
                 embed=EmbedBuilder.create_error_embed(
                     "Already in Queue",
                     "You are already in the matchmaking queue."
@@ -336,24 +334,22 @@ class Matchmaking(commands.Cog):
         """Leave the matchmaking queue."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /leave command")
 
-        # Defer response to avoid timeout
-        await ctx.defer(ephemeral=True)
-
+        # Remove user from queue
         if self.queue.remove_user(ctx.author):
-            # Update lobby and check threshold first
-            await self.update_lobby_display()
-            await self.check_matchmaking_threshold()
-
-            # Then send response
-            await ctx.followup.send(
+            # RESPOND IMMEDIATELY to avoid interaction timeout
+            await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(
                     "Left Queue",
                     "You have been removed from the queue."
                 ),
                 ephemeral=True
             )
+
+            # Then update lobby and check threshold AFTER responding
+            await self.update_lobby_display()
+            await self.check_matchmaking_threshold()
         else:
-            await ctx.followup.send(
+            await ctx.respond(
                 embed=EmbedBuilder.create_error_embed(
                     "Not in Queue",
                     "You are not in the matchmaking queue."

@@ -33,6 +33,7 @@ class DebateBot(discord.Bot):
         ]
 
         self.cogs_loaded = False
+        self.commands_cleared = False  # Flag to ensure we only clear commands once
 
         logger.info("Bot __init__ complete. Loading cogs...")
         for extension in self.initial_extensions:
@@ -68,6 +69,21 @@ class DebateBot(discord.Bot):
             logger.info(f"  - /{cmd.name}: {cmd.description}")
 
         logger.info("------")
+
+        # MANUALLY sync commands to Discord since automatic sync isn't working
+        if not self.commands_cleared:
+            logger.info("Manually syncing commands to Discord...")
+            try:
+                if Config.GUILD_ID:
+                    await self.sync_commands(guild_ids=[Config.GUILD_ID])
+                    logger.info(f"✓ Commands synced to guild {Config.GUILD_ID}")
+                else:
+                    await self.sync_commands()
+                    logger.info("✓ Commands synced globally")
+                self.commands_cleared = True
+            except Exception as e:
+                logger.error(f"Error syncing commands: {e}", exc_info=True)
+
         logger.info("Bot is ready! Waiting for commands...")
 
         # Set bot status
@@ -108,26 +124,8 @@ class DebateBot(discord.Bot):
             logger.info("Syncing globally (may take up to 1 hour)")
 
     async def on_connect(self):
-        """Called when bot connects to Discord - clear old command registrations."""
-        logger.info("on_connect called - clearing old command registrations...")
-
-        # IMPORTANT: Clear existing guild commands to remove duplicates from Discord's cache
-        if Config.GUILD_ID and self.user:
-            logger.info(f"Clearing existing commands from guild {Config.GUILD_ID}...")
-            try:
-                # Send empty command list to clear all existing commands
-                await self.http.bulk_upsert_guild_commands(
-                    self.user.id,
-                    Config.GUILD_ID,
-                    []
-                )
-                logger.info("✓ Existing guild commands cleared from Discord")
-                # Small delay to ensure Discord processes the clear
-                import asyncio
-                await asyncio.sleep(2)
-                logger.info("✓ Ready for fresh command sync")
-            except Exception as e:
-                logger.warning(f"Error clearing commands: {e}")
+        """Called when bot connects to Discord."""
+        logger.info("on_connect called - relying on automatic command sync")
 
 
 def main():
