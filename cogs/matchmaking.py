@@ -3,8 +3,11 @@ from discord.ext import commands
 from discord import SlashCommandGroup
 import random
 from typing import Optional
+import logging
 
 from config import Config
+
+logger = logging.getLogger('DebateBot.Matchmaking')
 from utils.models import (
     MatchmakingQueue, DebateRound, DebateTeam, JudgePanel,
     TeamType, RoundType
@@ -125,17 +128,22 @@ class Matchmaking(commands.Cog):
 
     async def cog_load(self):
         """Called when the cog is loaded."""
-        print("Matchmaking cog loaded")
+        logger.info("Matchmaking cog loaded")
+        logger.info("Registering slash commands: /queue, /leave, /clearqueue")
         # Initialize lobby display
         await self.initialize_lobby()
 
     async def initialize_lobby(self):
         """Initialize or update the lobby display."""
         try:
+            logger.info(f"Initializing lobby in channel {Config.LOBBY_CHANNEL_ID}")
             lobby_channel = self.bot.get_channel(Config.LOBBY_CHANNEL_ID)
             if not lobby_channel:
-                print(f"Warning: Lobby channel {Config.LOBBY_CHANNEL_ID} not found")
+                logger.warning(f"Warning: Lobby channel {Config.LOBBY_CHANNEL_ID} not found")
+                logger.warning("Make sure the bot has access to this channel and the ID is correct")
                 return
+
+            logger.info(f"✓ Found lobby channel: {lobby_channel.name}")
 
             # Check if we already have a lobby message
             if self.queue.lobby_message:
@@ -148,9 +156,10 @@ class Matchmaking(commands.Cog):
             embed = EmbedBuilder.create_lobby_embed(self.queue)
             view = LobbyView(self)
             self.queue.lobby_message = await lobby_channel.send(embed=embed, view=view)
+            logger.info("✓ Lobby embed created successfully")
 
         except Exception as e:
-            print(f"Error initializing lobby: {e}")
+            logger.error(f"Error initializing lobby: {e}", exc_info=True)
 
     async def update_lobby_display(self):
         """Update the lobby embed with current queue status."""
@@ -286,22 +295,31 @@ class Matchmaking(commands.Cog):
 
     @discord.slash_command(
         name="queue",
-        description="Join the matchmaking queue for a debate round"
+        description="Join the matchmaking queue for a debate round",
+        default_member_permissions=None  # Allow everyone to use this command
     )
     async def queue_command(self, ctx: discord.ApplicationContext):
         """Join the matchmaking queue."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /queue command")
+
+        # Defer response to avoid timeout
+        await ctx.defer(ephemeral=True)
+
         if self.queue.add_user(ctx.author):
-            await ctx.respond(
+            # Update lobby and check threshold first
+            await self.update_lobby_display()
+            await self.check_matchmaking_threshold()
+
+            # Then send response
+            await ctx.followup.send(
                 embed=EmbedBuilder.create_success_embed(
                     "Joined Queue",
                     f"You have been added to the queue. Position: {self.queue.size()}"
                 ),
                 ephemeral=True
             )
-            await self.update_lobby_display()
-            await self.check_matchmaking_threshold()
         else:
-            await ctx.respond(
+            await ctx.followup.send(
                 embed=EmbedBuilder.create_error_embed(
                     "Already in Queue",
                     "You are already in the matchmaking queue."
@@ -311,22 +329,31 @@ class Matchmaking(commands.Cog):
 
     @discord.slash_command(
         name="leave",
-        description="Leave the matchmaking queue"
+        description="Leave the matchmaking queue",
+        default_member_permissions=None  # Allow everyone to use this command
     )
     async def leave_command(self, ctx: discord.ApplicationContext):
         """Leave the matchmaking queue."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /leave command")
+
+        # Defer response to avoid timeout
+        await ctx.defer(ephemeral=True)
+
         if self.queue.remove_user(ctx.author):
-            await ctx.respond(
+            # Update lobby and check threshold first
+            await self.update_lobby_display()
+            await self.check_matchmaking_threshold()
+
+            # Then send response
+            await ctx.followup.send(
                 embed=EmbedBuilder.create_success_embed(
                     "Left Queue",
                     "You have been removed from the queue."
                 ),
                 ephemeral=True
             )
-            await self.update_lobby_display()
-            await self.check_matchmaking_threshold()
         else:
-            await ctx.respond(
+            await ctx.followup.send(
                 embed=EmbedBuilder.create_error_embed(
                     "Not in Queue",
                     "You are not in the matchmaking queue."

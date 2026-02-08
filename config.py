@@ -17,7 +17,8 @@ class Config:
     LOBBY_CHANNEL_ID = int(os.getenv("LOBBY_CHANNEL_ID", 0))
 
     # Role IDs (Optional)
-    HOST_ROLE_ID = int(os.getenv("HOST_ROLE_ID", 0)) if os.getenv("HOST_ROLE_ID") else None
+    _host_role_env = os.getenv("HOST_ROLE_ID", "")
+    HOST_ROLE_ID = int(_host_role_env) if _host_role_env and _host_role_env.strip() and _host_role_env.strip().isdigit() else None
 
     # Bot Settings
     BOT_PREFIX = "!"

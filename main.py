@@ -2,8 +2,16 @@ import discord
 from discord.ext import commands
 import sys
 import traceback
+import logging
 
 from config import Config
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('DebateBot')
 
 
 class DebateBot(discord.Bot):
@@ -24,11 +32,43 @@ class DebateBot(discord.Bot):
             'cogs.adjustment'
         ]
 
+        self.cogs_loaded = False
+
+        logger.info("Bot __init__ complete. Loading cogs...")
+        for extension in self.initial_extensions:
+            try:
+                logger.info(f"Loading extension: {extension}")
+                self.load_extension(extension)
+                logger.info(f"[OK] Loaded {extension}")
+            except Exception as e:
+                logger.error(f"[FAIL] Error loading {extension}: {e}")
+                traceback.print_exception(type(e), e, e.__traceback())
+
     async def on_ready(self):
         """Called when the bot is ready."""
-        print(f"Logged in as {self.user} (ID: {self.user.id})")
-        print(f"Connected to {len(self.guilds)} guild(s)")
-        print("------")
+        logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
+        logger.info(f"Connected to {len(self.guilds)} guild(s)")
+
+        # List all guilds
+        for guild in self.guilds:
+            logger.info(f"  - {guild.name} (ID: {guild.id})")
+
+        # Check if we're in the configured guild
+        if Config.GUILD_ID:
+            target_guild = self.get_guild(Config.GUILD_ID)
+            if target_guild:
+                logger.info(f"✓ Found configured guild: {target_guild.name}")
+            else:
+                logger.warning(f"✗ Configured GUILD_ID {Config.GUILD_ID} not found!")
+                logger.warning("Bot might not be in that server, or ID is wrong")
+
+        # List registered commands
+        logger.info(f"Registered {len(self.pending_application_commands)} application commands:")
+        for cmd in self.pending_application_commands:
+            logger.info(f"  - /{cmd.name}: {cmd.description}")
+
+        logger.info("------")
+        logger.info("Bot is ready! Waiting for commands...")
 
         # Set bot status
         await self.change_presence(
@@ -60,39 +100,46 @@ class DebateBot(discord.Bot):
 
     async def setup_hook(self):
         """Called before the bot connects to Discord."""
-        print("Loading extensions...")
-        for extension in self.initial_extensions:
-            try:
-                self.load_extension(extension)
-                print(f"✓ Loaded {extension}")
-            except Exception as e:
-                print(f"✗ Failed to load {extension}")
-                traceback.print_exception(type(e), e, e.__traceback__)
+        logger.info("setup_hook called")
+        logger.info("Syncing commands...")
+        if Config.GUILD_ID:
+            logger.info(f"Syncing to specific guild: {Config.GUILD_ID}")
+        else:
+            logger.info("Syncing globally (may take up to 1 hour)")
 
 
 def main():
     """Main entry point for the bot."""
+    logger.info("Starting AP Debate Matchmaking Bot...")
+
     try:
         # Validate configuration
+        logger.info("Validating configuration...")
         Config.validate()
+        logger.info("✓ Configuration valid")
+        logger.info(f"  - Guild ID: {Config.GUILD_ID}")
+        logger.info(f"  - Lobby Channel: {Config.LOBBY_CHANNEL_ID}")
+        logger.info(f"  - Host Channel: {Config.HOST_CHANNEL_ID}")
+        logger.info(f"  - Host Role: {Config.HOST_ROLE_ID if Config.HOST_ROLE_ID else 'Not set (optional)'}")
     except ValueError as e:
-        print(f"Configuration Error: {e}")
-        print("Please check your .env file and ensure all required values are set.")
+        logger.error(f"Configuration Error: {e}")
+        logger.error("Please check your .env file and ensure all required values are set.")
         sys.exit(1)
 
     # Create and run bot
     bot = DebateBot()
 
     try:
+        logger.info("Connecting to Discord...")
         bot.run(Config.DISCORD_TOKEN)
     except discord.LoginFailure:
-        print("Error: Invalid bot token. Please check your DISCORD_TOKEN in .env")
+        logger.error("Error: Invalid bot token. Please check your DISCORD_TOKEN in .env")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\nBot stopped by user")
+        logger.info("\nBot stopped by user")
         sys.exit(0)
     except Exception as e:
-        print(f"Fatal error: {e}")
+        logger.error(f"Fatal error: {e}")
         traceback.print_exception(type(e), e, e.__traceback__)
         sys.exit(1)
 
