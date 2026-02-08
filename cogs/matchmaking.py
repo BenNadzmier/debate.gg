@@ -380,7 +380,7 @@ class Matchmaking(commands.Cog):
                     "Left Queue",
                     "You have been removed from the queue."
                 ),
-                ephemeral=True
+                ephemeral=False
             )
 
             # Then update lobby and check threshold AFTER responding
@@ -392,7 +392,7 @@ class Matchmaking(commands.Cog):
                     "Not in Queue",
                     "You are not in the matchmaking queue."
                 ),
-                ephemeral=True
+                ephemeral=False
             )
 
     @discord.slash_command(
@@ -410,7 +410,7 @@ class Matchmaking(commands.Cog):
                 "Queue Cleared",
                 "The matchmaking queue has been cleared."
             ),
-            ephemeral=True
+            ephemeral=False
         )
 
 

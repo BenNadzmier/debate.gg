@@ -99,19 +99,19 @@ class DebateBot(discord.Bot):
         if isinstance(error, commands.MissingPermissions):
             await ctx.respond(
                 "❌ You don't have permission to use this command.",
-                ephemeral=True
+                ephemeral=False
             )
         elif isinstance(error, commands.CommandOnCooldown):
             await ctx.respond(
                 f"⏰ This command is on cooldown. Try again in {error.retry_after:.2f}s",
-                ephemeral=True
+                ephemeral=False
             )
         else:
             print(f"Error in command {ctx.command}:", file=sys.stderr)
             traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
             await ctx.respond(
                 "❌ An error occurred while processing this command.",
-                ephemeral=True
+                ephemeral=False
             )
 
     async def setup_hook(self):

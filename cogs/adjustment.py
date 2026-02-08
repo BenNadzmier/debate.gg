@@ -38,7 +38,7 @@ class AllocationAdjustmentView(discord.ui.View):
         await interaction.response.send_message(
             "Select which team to toggle between Full (3 debaters) and Iron (2 debaters):",
             view=view,
-            ephemeral=True
+            ephemeral=False
         )
 
     @discord.ui.button(label="Move to Judge", style=discord.ButtonStyle.secondary, row=1)
@@ -48,7 +48,7 @@ class AllocationAdjustmentView(discord.ui.View):
         await interaction.response.send_message(
             "Select a debater to move to the judging panel:",
             view=view,
-            ephemeral=True
+            ephemeral=False
         )
 
     @discord.ui.button(label="Move to Debater", style=discord.ButtonStyle.secondary, row=1)
@@ -58,7 +58,7 @@ class AllocationAdjustmentView(discord.ui.View):
         await interaction.response.send_message(
             "Select a judge to move to a debate team:",
             view=view,
-            ephemeral=True
+            ephemeral=False
         )
 
     @discord.ui.button(label="✅ Confirm & Start Round", style=discord.ButtonStyle.success, row=2)
@@ -116,7 +116,7 @@ class SwapMembersModal(discord.ui.Modal):
         if not member1_id or not member2_id:
             await interaction.response.send_message(
                 "❌ Invalid user ID or mention format.",
-                ephemeral=True
+                ephemeral=False
             )
             return
 
@@ -127,7 +127,7 @@ class SwapMembersModal(discord.ui.Modal):
         if not member1 or not member2:
             await interaction.response.send_message(
                 "❌ Could not find one or both members.",
-                ephemeral=True
+                ephemeral=False
             )
             return
 
@@ -135,13 +135,13 @@ class SwapMembersModal(discord.ui.Modal):
         if self.debate_round.swap_members(member1, member2):
             await interaction.response.send_message(
                 f"✅ Swapped {member1.mention} and {member2.mention}",
-                ephemeral=True
+                ephemeral=False
             )
             await self.parent_view.refresh_embed(interaction)
         else:
             await interaction.response.send_message(
                 "❌ Could not swap members. Make sure both are in the round.",
-                ephemeral=True
+                ephemeral=False
             )
 
     def _parse_member_id(self, text: str) -> Optional[int]:
@@ -183,13 +183,13 @@ class ToggleTeamTypeView(discord.ui.View):
             team.team_type = TeamType.IRON
             await interaction.response.send_message(
                 f"✅ {team.team_name} is now an Iron team (2 debaters)",
-                ephemeral=True
+                ephemeral=False
             )
         else:
             team.team_type = TeamType.FULL
             await interaction.response.send_message(
                 f"✅ {team.team_name} is now a Full team (3 debaters)",
-                ephemeral=True
+                ephemeral=False
             )
 
         await self.parent_view.refresh_embed(interaction)
@@ -247,7 +247,7 @@ class MoveToJudgeView(discord.ui.View):
 
         await interaction.response.send_message(
             f"✅ Moved {member.mention} to judging panel",
-            ephemeral=True
+            ephemeral=False
         )
         await self.parent_view.refresh_embed(interaction)
         self.stop()
@@ -291,7 +291,7 @@ class MoveToDebaterView(discord.ui.View):
         await interaction.response.send_message(
             "Select which team to join:",
             view=TeamSelectionView(self.parent_view, self.debate_round, member_id),
-            ephemeral=True
+            ephemeral=False
         )
         self.stop()
 
@@ -329,7 +329,7 @@ class TeamSelectionView(discord.ui.View):
         if team.add_member(member):
             await interaction.response.send_message(
                 f"✅ Moved {member.mention} to {team.team_name}",
-                ephemeral=True
+                ephemeral=False
             )
             await self.parent_view.refresh_embed(interaction)
         else:
@@ -337,7 +337,7 @@ class TeamSelectionView(discord.ui.View):
             self.debate_round.judges.add_judge(member)
             await interaction.response.send_message(
                 f"❌ {team.team_name} is full. Cannot add more members.",
-                ephemeral=True
+                ephemeral=False
             )
 
         self.stop()
@@ -366,7 +366,7 @@ class MotionInputModal(discord.ui.Modal):
         if not motion:
             await interaction.response.send_message(
                 "❌ Motion cannot be empty.",
-                ephemeral=True
+                ephemeral=False
             )
             return
 
