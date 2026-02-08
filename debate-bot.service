@@ -1,0 +1,25 @@
+# Systemd service file for AP Debate Bot
+# Copy this file to /etc/systemd/system/debate-bot.service
+# Then run: sudo systemctl enable debate-bot && sudo systemctl start debate-bot
+
+[Unit]
+Description=AP Debate Matchmaking Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=youruser
+Group=yourgroup
+WorkingDirectory=/path/to/debate.gg
+ExecStart=/usr/bin/python3 /path/to/debate.gg/main.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/debate-bot.log
+StandardError=append:/var/log/debate-bot.error.log
+
+# Optional: Environment variables (or use .env file in WorkingDirectory)
+# Environment="DISCORD_TOKEN=your_token"
+# Environment="GUILD_ID=your_guild_id"
+
+[Install]
+WantedBy=multi-user.target
