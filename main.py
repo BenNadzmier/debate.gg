@@ -107,6 +107,28 @@ class DebateBot(discord.Bot):
         else:
             logger.info("Syncing globally (may take up to 1 hour)")
 
+    async def on_connect(self):
+        """Called when bot connects to Discord - clear old command registrations."""
+        logger.info("on_connect called - clearing old command registrations...")
+
+        # IMPORTANT: Clear existing guild commands to remove duplicates from Discord's cache
+        if Config.GUILD_ID and self.user:
+            logger.info(f"Clearing existing commands from guild {Config.GUILD_ID}...")
+            try:
+                # Send empty command list to clear all existing commands
+                await self.http.bulk_upsert_guild_commands(
+                    self.user.id,
+                    Config.GUILD_ID,
+                    []
+                )
+                logger.info("✓ Existing guild commands cleared from Discord")
+                # Small delay to ensure Discord processes the clear
+                import asyncio
+                await asyncio.sleep(2)
+                logger.info("✓ Ready for fresh command sync")
+            except Exception as e:
+                logger.warning(f"Error clearing commands: {e}")
+
 
 def main():
     """Main entry point for the bot."""
