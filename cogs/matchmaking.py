@@ -346,8 +346,7 @@ class Matchmaking(commands.Cog):
                     f"Joined Queue as {role_text.title()}",
                     f"You have been added to the {role_text} queue.\n"
                     f"**Debaters:** {self.queue.debater_count()} | **Judges:** {self.queue.judge_count()}"
-                ),
-                ephemeral=True
+                )
             )
 
             # Then update lobby and check threshold AFTER responding
@@ -361,8 +360,7 @@ class Matchmaking(commands.Cog):
                     f"Switched to {role_text.title()}",
                     f"You have been moved from {current_role} to {role_text} queue.\n"
                     f"**Debaters:** {self.queue.debater_count()} | **Judges:** {self.queue.judge_count()}"
-                ),
-                ephemeral=True
+                )
             )
 
     @discord.slash_command(
