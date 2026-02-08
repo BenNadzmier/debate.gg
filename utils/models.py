@@ -173,39 +173,85 @@ class DebateRound:
 
 @dataclass
 class MatchmakingQueue:
-    """Manages the matchmaking queue."""
-    users: List[discord.Member] = field(default_factory=list)
+    """Manages the matchmaking queue with separate debater and judge queues."""
+    debaters: List[discord.Member] = field(default_factory=list)
+    judges: List[discord.Member] = field(default_factory=list)
     lobby_message: Optional[discord.Message] = None
 
-    def add_user(self, user: discord.Member) -> bool:
-        """Add a user to the queue."""
-        if user not in self.users:
-            self.users.append(user)
+    def add_debater(self, user: discord.Member) -> bool:
+        """Add a user to the debater queue."""
+        # Remove from judge queue if they're there
+        if user in self.judges:
+            self.judges.remove(user)
+
+        if user not in self.debaters:
+            self.debaters.append(user)
+            return True
+        return False
+
+    def add_judge(self, user: discord.Member) -> bool:
+        """Add a user to the judge queue."""
+        # Remove from debater queue if they're there
+        if user in self.debaters:
+            self.debaters.remove(user)
+
+        if user not in self.judges:
+            self.judges.append(user)
             return True
         return False
 
     def remove_user(self, user: discord.Member) -> bool:
-        """Remove a user from the queue."""
-        if user in self.users:
-            self.users.remove(user)
-            return True
-        return False
+        """Remove a user from either queue."""
+        removed = False
+        if user in self.debaters:
+            self.debaters.remove(user)
+            removed = True
+        if user in self.judges:
+            self.judges.remove(user)
+            removed = True
+        return removed
+
+    def is_in_queue(self, user: discord.Member) -> bool:
+        """Check if user is in any queue."""
+        return user in self.debaters or user in self.judges
+
+    def get_user_role(self, user: discord.Member) -> Optional[str]:
+        """Get the role of a user in the queue (debater or judge)."""
+        if user in self.debaters:
+            return "debater"
+        elif user in self.judges:
+            return "judge"
+        return None
 
     def clear(self):
-        """Clear the queue."""
-        self.users.clear()
+        """Clear both queues."""
+        self.debaters.clear()
+        self.judges.clear()
 
     def size(self) -> int:
-        """Get the current queue size."""
-        return len(self.users)
+        """Get the total queue size (debaters + judges)."""
+        return len(self.debaters) + len(self.judges)
+
+    def debater_count(self) -> int:
+        """Get the number of debaters in queue."""
+        return len(self.debaters)
+
+    def judge_count(self) -> int:
+        """Get the number of judges in queue."""
+        return len(self.judges)
 
     def get_threshold_type(self) -> Optional[RoundType]:
-        """Determine the round type based on current queue size."""
-        size = self.size()
-        if size == 5:
+        """Determine the round type based on current queue composition."""
+        debaters = self.debater_count()
+        judges = self.judge_count()
+
+        # DOUBLE_IRON: 4 debaters + 1 judge (2v2)
+        if debaters == 4 and judges >= 1:
             return RoundType.DOUBLE_IRON
-        elif size == 6:
+        # SINGLE_IRON: 5 debaters + 1 judge (3v2 or 2v3)
+        elif debaters == 5 and judges >= 1:
             return RoundType.SINGLE_IRON
-        elif size >= 7:
+        # STANDARD: 6+ debaters + 1+ judges (3v3)
+        elif debaters >= 6 and judges >= 1:
             return RoundType.STANDARD
         return None

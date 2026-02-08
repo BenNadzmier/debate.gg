@@ -18,11 +18,12 @@ from utils.embeds import EmbedBuilder
 class HostControlView(discord.ui.View):
     """View for host controls to start rounds."""
 
-    def __init__(self, cog, round_type: RoundType, queue_users: list):
+    def __init__(self, cog, round_type: RoundType, queue_debaters: list, queue_judges: list):
         super().__init__(timeout=None)
         self.cog = cog
         self.round_type = round_type
-        self.queue_users = queue_users
+        self.queue_debaters = queue_debaters
+        self.queue_judges = queue_judges
 
         # Add buttons based on round type
         if round_type == RoundType.DOUBLE_IRON:
@@ -31,7 +32,8 @@ class HostControlView(discord.ui.View):
                 style=discord.ButtonStyle.primary,
                 round_type=round_type,
                 cog=cog,
-                queue_users=queue_users
+                queue_debaters=queue_debaters,
+                queue_judges=queue_judges
             ))
         elif round_type == RoundType.SINGLE_IRON:
             self.add_item(StartRoundButton(
@@ -39,7 +41,8 @@ class HostControlView(discord.ui.View):
                 style=discord.ButtonStyle.primary,
                 round_type=round_type,
                 cog=cog,
-                queue_users=queue_users
+                queue_debaters=queue_debaters,
+                queue_judges=queue_judges
             ))
         elif round_type == RoundType.STANDARD:
             self.add_item(StartRoundButton(
@@ -47,7 +50,8 @@ class HostControlView(discord.ui.View):
                 style=discord.ButtonStyle.success,
                 round_type=round_type,
                 cog=cog,
-                queue_users=queue_users
+                queue_debaters=queue_debaters,
+                queue_judges=queue_judges
             ))
             self.add_item(WaitForPanelistsButton(cog=cog))
 
@@ -55,17 +59,18 @@ class HostControlView(discord.ui.View):
 class StartRoundButton(discord.ui.Button):
     """Button to start a debate round."""
 
-    def __init__(self, label: str, style: discord.ButtonStyle, round_type: RoundType, cog, queue_users: list):
+    def __init__(self, label: str, style: discord.ButtonStyle, round_type: RoundType, cog, queue_debaters: list, queue_judges: list):
         super().__init__(label=label, style=style)
         self.round_type = round_type
         self.cog = cog
-        self.queue_users = queue_users
+        self.queue_debaters = queue_debaters
+        self.queue_judges = queue_judges
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
         # Create the round allocation
-        debate_round = self.cog.create_round_allocation(self.queue_users, self.round_type)
+        debate_round = self.cog.create_round_allocation(self.queue_debaters, self.queue_judges, self.round_type)
 
         # Store the round
         self.cog.current_round = debate_round
@@ -202,8 +207,17 @@ class Matchmaking(commands.Cog):
                 print(f"Warning: Host channel {Config.HOST_CHANNEL_ID} not found")
                 return
 
-            embed = EmbedBuilder.create_host_notification_embed(self.queue.size(), round_type)
-            view = HostControlView(self, round_type, list(self.queue.users))
+            embed = EmbedBuilder.create_host_notification_embed(
+                self.queue.debater_count(),
+                self.queue.judge_count(),
+                round_type
+            )
+            view = HostControlView(
+                self,
+                round_type,
+                list(self.queue.debaters),
+                list(self.queue.judges)
+            )
 
             # Delete old notification if exists
             if self.host_notification_message:
@@ -226,54 +240,61 @@ class Matchmaking(commands.Cog):
         except Exception as e:
             print(f"Error sending host notification: {e}")
 
-    def create_round_allocation(self, users: list, round_type: RoundType) -> DebateRound:
-        """Create a debate round allocation from queued users."""
+    def create_round_allocation(self, debaters: list, judges: list, round_type: RoundType) -> DebateRound:
+        """Create a debate round allocation from queued debaters and judges."""
         self.round_counter += 1
 
-        # Shuffle users for random allocation
-        shuffled_users = users.copy()
-        random.shuffle(shuffled_users)
+        # Shuffle debaters and judges separately for random allocation
+        shuffled_debaters = debaters.copy()
+        shuffled_judges = judges.copy()
+        random.shuffle(shuffled_debaters)
+        random.shuffle(shuffled_judges)
 
-        # Initialize teams and judges
+        # Initialize teams and judge panel
+        judge_panel = JudgePanel()
+
+        # Allocate teams based on round type
         if round_type == RoundType.DOUBLE_IRON:
-            # 5 people: 2v2 + 1 judge
+            # 4 debaters: 2v2, 1+ judges
             gov_team = DebateTeam("Government", TeamType.IRON)
             opp_team = DebateTeam("Opposition", TeamType.IRON)
-            judge_panel = JudgePanel()
 
-            gov_team.members = shuffled_users[0:2]
-            opp_team.members = shuffled_users[2:4]
-            judge_panel.chair = shuffled_users[4]
+            gov_team.members = shuffled_debaters[0:2]
+            opp_team.members = shuffled_debaters[2:4]
+
+            # Assign judges
+            for judge in shuffled_judges:
+                judge_panel.add_judge(judge)
 
         elif round_type == RoundType.SINGLE_IRON:
-            # 6 people: One full team (3), one iron team (2), 1 judge
+            # 5 debaters: One full team (3), one iron team (2), 1+ judges
             # Randomly decide which team is iron
             gov_is_iron = random.choice([True, False])
 
             gov_team = DebateTeam("Government", TeamType.IRON if gov_is_iron else TeamType.FULL)
             opp_team = DebateTeam("Opposition", TeamType.FULL if gov_is_iron else TeamType.IRON)
-            judge_panel = JudgePanel()
 
             if gov_is_iron:
-                gov_team.members = shuffled_users[0:2]
-                opp_team.members = shuffled_users[2:5]
+                gov_team.members = shuffled_debaters[0:2]
+                opp_team.members = shuffled_debaters[2:5]
             else:
-                gov_team.members = shuffled_users[0:3]
-                opp_team.members = shuffled_users[3:5]
+                gov_team.members = shuffled_debaters[0:3]
+                opp_team.members = shuffled_debaters[3:5]
 
-            judge_panel.chair = shuffled_users[5]
+            # Assign judges
+            for judge in shuffled_judges:
+                judge_panel.add_judge(judge)
 
         else:  # STANDARD
-            # 7+ people: 3v3 + judges
+            # 6+ debaters: 3v3, 1+ judges
             gov_team = DebateTeam("Government", TeamType.FULL)
             opp_team = DebateTeam("Opposition", TeamType.FULL)
-            judge_panel = JudgePanel()
 
-            gov_team.members = shuffled_users[0:3]
-            opp_team.members = shuffled_users[3:6]
+            gov_team.members = shuffled_debaters[0:3]
+            opp_team.members = shuffled_debaters[3:6]
 
-            # Remaining users are judges
-            for judge in shuffled_users[6:]:
+            # Assign all judges
+            for judge in shuffled_judges:
                 judge_panel.add_judge(judge)
 
         return DebateRound(
@@ -298,17 +319,33 @@ class Matchmaking(commands.Cog):
         description="Join the matchmaking queue for a debate round",
         default_member_permissions=None  # Allow everyone to use this command
     )
-    async def queue_command(self, ctx: discord.ApplicationContext):
-        """Join the matchmaking queue."""
-        logger.info(f"User {ctx.author} ({ctx.author.id}) used /queue command")
+    async def queue_command(
+        self,
+        ctx: discord.ApplicationContext,
+        role: str = discord.Option(
+            description="Queue as a debater or judge",
+            choices=["debater", "judge"],
+            required=True
+        )
+    ):
+        """Join the matchmaking queue as debater or judge."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /queue command as {role}")
 
-        # Add user to queue
-        if self.queue.add_user(ctx.author):
+        # Add user to appropriate queue
+        if role == "debater":
+            success = self.queue.add_debater(ctx.author)
+            role_text = "debater"
+        else:
+            success = self.queue.add_judge(ctx.author)
+            role_text = "judge"
+
+        if success:
             # RESPOND IMMEDIATELY to avoid interaction timeout
             await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(
-                    "Joined Queue",
-                    f"You have been added to the queue. Position: {self.queue.size()}"
+                    f"Joined Queue as {role_text.title()}",
+                    f"You have been added to the {role_text} queue.\n"
+                    f"**Debaters:** {self.queue.debater_count()} | **Judges:** {self.queue.judge_count()}"
                 ),
                 ephemeral=True
             )
@@ -317,10 +354,13 @@ class Matchmaking(commands.Cog):
             await self.update_lobby_display()
             await self.check_matchmaking_threshold()
         else:
+            # User switched roles - this shouldn't normally happen but handle it
+            current_role = self.queue.get_user_role(ctx.author)
             await ctx.respond(
-                embed=EmbedBuilder.create_error_embed(
-                    "Already in Queue",
-                    "You are already in the matchmaking queue."
+                embed=EmbedBuilder.create_success_embed(
+                    f"Switched to {role_text.title()}",
+                    f"You have been moved from {current_role} to {role_text} queue.\n"
+                    f"**Debaters:** {self.queue.debater_count()} | **Judges:** {self.queue.judge_count()}"
                 ),
                 ephemeral=True
             )

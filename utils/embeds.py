@@ -18,82 +18,100 @@ class EmbedBuilder:
         """Create the lobby embed showing queued users."""
         embed = discord.Embed(
             title="🎭 AP Debate Matchmaking Lobby",
-            description="Join the queue to participate in a debate round!",
+            description="Join the queue to participate in a debate round!\nUse `/queue debater` or `/queue judge`",
             color=EmbedBuilder.COLOR_PRIMARY
         )
 
         if queue.size() == 0:
             embed.add_field(
                 name="Queue Status",
-                value="*No one in queue*\nUse `/queue` to join!",
+                value="*No one in queue*",
                 inline=False
             )
         else:
-            user_list = "\n".join([f"{i+1}. {user.mention}" for i, user in enumerate(queue.users)])
+            # Debaters list
+            if queue.debater_count() > 0:
+                debater_list = "\n".join([f"{i+1}. {user.mention}" for i, user in enumerate(queue.debaters)])
+            else:
+                debater_list = "*No debaters in queue*"
+
             embed.add_field(
-                name=f"Queued Users ({queue.size()})",
-                value=user_list,
-                inline=False
+                name=f"🗣️ Debaters ({queue.debater_count()})",
+                value=debater_list,
+                inline=True
+            )
+
+            # Judges list
+            if queue.judge_count() > 0:
+                judge_list = "\n".join([f"{i+1}. {user.mention}" for i, user in enumerate(queue.judges)])
+            else:
+                judge_list = "*No judges in queue*"
+
+            embed.add_field(
+                name=f"⚖️ Judges ({queue.judge_count()})",
+                value=judge_list,
+                inline=True
             )
 
         # Show threshold information
-        threshold_info = EmbedBuilder._get_threshold_info(queue.size())
+        threshold_info = EmbedBuilder._get_threshold_info(queue.debater_count(), queue.judge_count())
         embed.add_field(
             name="Matchmaking Thresholds",
             value=threshold_info,
             inline=False
         )
 
-        embed.set_footer(text="Use /queue to join • Use /leave to exit queue")
+        embed.set_footer(text="Use /queue <debater|judge> to join • Use /leave to exit queue")
         return embed
 
     @staticmethod
-    def _get_threshold_info(queue_size: int) -> str:
-        """Get threshold information based on current queue size."""
+    def _get_threshold_info(debater_count: int, judge_count: int) -> str:
+        """Get threshold information based on current queue composition."""
         thresholds = [
-            ("5 Players", "Double Iron Round (2v2 + 1 Judge)"),
-            ("6 Players", "Single Iron Round (3v2 + 1 Judge)"),
-            ("7+ Players", "Standard Round (3v3 + Judge(s))")
+            (4, 1, "Double Iron Round (2v2)"),
+            (5, 1, "Single Iron Round (3v2 or 2v3)"),
+            (6, 1, "Standard Round (3v3)")
         ]
 
         lines = []
-        for count, desc in thresholds:
-            count_num = int(count.split()[0].rstrip('+'))
-            if queue_size >= count_num:
-                lines.append(f"✅ **{count}**: {desc}")
+        for debaters_needed, judges_needed, desc in thresholds:
+            if debater_count >= debaters_needed and judge_count >= judges_needed:
+                status = "✅"
             else:
-                lines.append(f"⬜ **{count}**: {desc}")
+                status = "⬜"
+            lines.append(f"{status} **{debaters_needed} Debaters + {judges_needed} Judge**: {desc}")
 
         return "\n".join(lines)
 
     @staticmethod
-    def create_host_notification_embed(queue_size: int, round_type: RoundType) -> discord.Embed:
+    def create_host_notification_embed(debater_count: int, judge_count: int, round_type: RoundType) -> discord.Embed:
         """Create notification embed for the host channel."""
+        total = debater_count + judge_count
         embed = discord.Embed(
             title="🔔 Matchmaking Ready!",
             color=EmbedBuilder.COLOR_WARNING
         )
 
         if round_type == RoundType.DOUBLE_IRON:
-            embed.description = f"**{queue_size} players** are ready for a **Double Iron Round** (2v2)!"
+            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Double Iron Round** (2v2)!"
             embed.add_field(
                 name="Configuration",
-                value="• Government: 2 Debaters (Iron)\n• Opposition: 2 Debaters (Iron)\n• Judges: 1 Chair",
+                value=f"• Government: 2 Debaters (Iron)\n• Opposition: 2 Debaters (Iron)\n• Judges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
                 inline=False
             )
         elif round_type == RoundType.SINGLE_IRON:
-            embed.description = f"**{queue_size} players** are ready for a **Single Iron Round**!"
+            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Single Iron Round**!"
             embed.add_field(
                 name="Configuration",
-                value="• One Full Team: 3 Debaters\n• One Iron Team: 2 Debaters\n• Judges: 1 Chair",
+                value=f"• One Full Team: 3 Debaters\n• One Iron Team: 2 Debaters\n• Judges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
                 inline=False
             )
         elif round_type == RoundType.STANDARD:
-            extra_judges = queue_size - 7
-            embed.description = f"**{queue_size} players** are ready!"
-            config_text = "• Government: 3 Debaters\n• Opposition: 3 Debaters\n• Judges: 1 Chair"
-            if extra_judges > 0:
-                config_text += f" + {extra_judges} Panelist{'s' if extra_judges > 1 else ''}"
+            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Standard Round**!"
+            config_text = f"• Government: 3 Debaters\n• Opposition: 3 Debaters\n• Judges: {judge_count} (Chair"
+            if judge_count > 1:
+                config_text += f" + {judge_count-1} Panelist{'s' if judge_count > 2 else ''}"
+            config_text += ")"
             embed.add_field(
                 name="Configuration",
                 value=config_text,
