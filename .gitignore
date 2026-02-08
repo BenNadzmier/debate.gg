@@ -42,3 +42,6 @@ logs/
 # Node modules (from old setup)
 node_modules/
 package-lock.json
+
+# Claude Code settings
+.claude/
