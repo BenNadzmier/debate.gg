@@ -173,19 +173,29 @@ class ToggleTeamTypeView(discord.ui.View):
         await self._toggle_team(interaction, self.debate_round.opposition)
 
     async def _toggle_team(self, interaction: discord.Interaction, team):
-        """Toggle a team between Full and Iron."""
+        """Toggle a team between Solo, Iron, and Full."""
         if team.team_type == TeamType.FULL:
-            # Check if we can reduce to Iron (need to remove 1 member)
+            # Full → Iron: remove 1 member to judges
             if len(team.members) > 2:
                 removed_member = team.members.pop()
-                # Add to judges
                 self.debate_round.judges.add_judge(removed_member)
             team.team_type = TeamType.IRON
             await interaction.response.send_message(
                 f"✅ {team.team_name} is now an Iron team (2 debaters)",
                 ephemeral=False
             )
+        elif team.team_type == TeamType.IRON:
+            # Iron → Solo: remove 1 member to judges
+            if len(team.members) > 1:
+                removed_member = team.members.pop()
+                self.debate_round.judges.add_judge(removed_member)
+            team.team_type = TeamType.SOLO
+            await interaction.response.send_message(
+                f"✅ {team.team_name} is now a Solo team (1 debater — PM-LO Speech)",
+                ephemeral=False
+            )
         else:
+            # Solo → Full
             team.team_type = TeamType.FULL
             await interaction.response.send_message(
                 f"✅ {team.team_name} is now a Full team (3 debaters)",

@@ -34,6 +34,11 @@ class Config:
         "opp": ["Leader of Opposition", "Opposition Whip"]
     }
 
+    PM_LO_POSITIONS = {
+        "gov": ["Prime Minister"],
+        "opp": ["Leader of Opposition"]
+    }
+
     JUDGE_ROLES = ["Chair", "Panelist"]
 
     @classmethod

@@ -77,7 +77,15 @@ class Matchmaking(commands.Cog):
         judge_panel = JudgePanel()
 
         # Allocate teams based on round type
-        if round_type == RoundType.DOUBLE_IRON:
+        if round_type == RoundType.PM_LO:
+            gov_team = DebateTeam("Government", TeamType.SOLO)
+            opp_team = DebateTeam("Opposition", TeamType.SOLO)
+            gov_team.members = shuffled_debaters[0:1]
+            opp_team.members = shuffled_debaters[1:2]
+            for judge in shuffled_judges:
+                judge_panel.add_judge(judge)
+
+        elif round_type == RoundType.DOUBLE_IRON:
             gov_team = DebateTeam("Government", TeamType.IRON)
             opp_team = DebateTeam("Opposition", TeamType.IRON)
             gov_team.members = shuffled_debaters[0:2]
@@ -393,20 +401,20 @@ class Matchmaking(commands.Cog):
             )
             return
 
-        # Check minimum requirements
+        # Check minimum requirements: 2 debaters + 1 judge (PM-LO)
         debaters = lobby.debater_count()
         judges = lobby.judge_count()
 
-        if debaters < 4 or judges < 1:
+        if debaters < 2 or judges < 1:
             needed = []
-            if debaters < 4:
-                needed.append(f"**{4 - debaters}** more debater(s)")
+            if debaters < 2:
+                needed.append(f"**{2 - debaters}** more debater(s)")
             if judges < 1:
                 needed.append(f"**1** judge")
             await ctx.respond(
                 embed=EmbedBuilder.create_error_embed(
                     "Not Enough Players",
-                    f"Cannot start **{lobby.name}**. Need at least **4 debaters** and **1 judge**.\n"
+                    f"Cannot start **{lobby.name}**. Need at least **2 debaters** and **1 judge**.\n"
                     f"Currently: **{debaters}** debater(s), **{judges}** judge(s).\n"
                     f"Still need: {', '.join(needed)}."
                 ),

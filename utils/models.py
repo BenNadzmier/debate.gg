@@ -8,10 +8,12 @@ class TeamType(Enum):
     """Team composition types."""
     FULL = "full"  # 3 debaters
     IRON = "iron"  # 2 debaters
+    SOLO = "solo"  # 1 debater
 
 
 class RoundType(Enum):
     """Types of debate rounds based on participant count."""
+    PM_LO = "pm_lo"  # 3 people: 1v1 + 1 judge (PM-LO Speech)
     DOUBLE_IRON = "double_iron"  # 5 people: 2v2 + 1 judge
     SINGLE_IRON = "single_iron"  # 6 people: 3v2 or 2v3 + 1 judge
     STANDARD = "standard"  # 7+ people: 3v3 + judges
@@ -24,10 +26,19 @@ class DebateTeam:
     team_type: TeamType
     members: List[discord.Member] = field(default_factory=list)
 
+    @property
+    def max_size(self) -> int:
+        """Get the max team size based on team type."""
+        if self.team_type == TeamType.FULL:
+            return 3
+        elif self.team_type == TeamType.IRON:
+            return 2
+        else:  # SOLO
+            return 1
+
     def add_member(self, member: discord.Member):
         """Add a member to the team."""
-        max_size = 3 if self.team_type == TeamType.FULL else 2
-        if len(self.members) < max_size:
+        if len(self.members) < self.max_size:
             self.members.append(member)
             return True
         return False
@@ -41,8 +52,7 @@ class DebateTeam:
 
     def is_full(self) -> bool:
         """Check if team is at capacity."""
-        max_size = 3 if self.team_type == TeamType.FULL else 2
-        return len(self.members) >= max_size
+        return len(self.members) >= self.max_size
 
     def get_position_name(self, index: int) -> str:
         """Get position name for a team member by index."""
@@ -50,8 +60,10 @@ class DebateTeam:
 
         if self.team_type == TeamType.FULL:
             positions = Config.TEAM_POSITIONS["gov" if self.team_name == "Government" else "opp"]
-        else:
+        elif self.team_type == TeamType.IRON:
             positions = Config.IRON_TEAM_POSITIONS["gov" if self.team_name == "Government" else "opp"]
+        else:  # SOLO
+            positions = Config.PM_LO_POSITIONS["gov" if self.team_name == "Government" else "opp"]
 
         return positions[index] if index < len(positions) else f"Speaker {index + 1}"
 
@@ -247,8 +259,14 @@ class MatchmakingQueue:
         debaters = self.debater_count()
         judges = self.judge_count()
 
+        # PM_LO: 2 debaters + 1 judge (1v1)
+        if debaters == 2 and judges >= 1:
+            return RoundType.PM_LO
+        # PM_LO also applies for 3 debaters + 1 judge — but prefer DOUBLE_IRON at 4
+        elif debaters == 3 and judges >= 1:
+            return RoundType.PM_LO
         # DOUBLE_IRON: 4 debaters + 1 judge (2v2)
-        if debaters == 4 and judges >= 1:
+        elif debaters == 4 and judges >= 1:
             return RoundType.DOUBLE_IRON
         # SINGLE_IRON: 5 debaters + 1 judge (3v2 or 2v3)
         elif debaters == 5 and judges >= 1:

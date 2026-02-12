@@ -112,6 +112,7 @@ class EmbedBuilder:
     def _get_threshold_info(debater_count: int, judge_count: int) -> str:
         """Get threshold information based on current queue composition."""
         thresholds = [
+            (2, 1, "PM-LO Speech (1v1)"),
             (4, 1, "Double Iron Round (2v2)"),
             (5, 1, "Single Iron Round (3v2 or 2v3)"),
             (6, 1, "Standard Round (3v3)")
@@ -136,7 +137,14 @@ class EmbedBuilder:
             color=EmbedBuilder.COLOR_WARNING
         )
 
-        if round_type == RoundType.DOUBLE_IRON:
+        if round_type == RoundType.PM_LO:
+            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **PM-LO Speech** (1v1)!"
+            embed.add_field(
+                name="Configuration",
+                value=f"• Government: 1 Debater (PM)\n• Opposition: 1 Debater (LO)\n• Judges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
+                inline=False
+            )
+        elif round_type == RoundType.DOUBLE_IRON:
             embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Double Iron Round** (2v2)!"
             embed.add_field(
                 name="Configuration",
