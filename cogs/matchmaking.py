@@ -314,7 +314,7 @@ class Matchmaking(commands.Cog):
     async def lobby_command(
         self,
         ctx: discord.ApplicationContext,
-        name: str = discord.Option(description="Name of the lobby to view", required=True)
+        name: str = discord.Option(description="Name of the lobby to view", required=True, autocomplete=lobby_name_autocomplete)
     ):
         """Show the lobby infobox for a specific lobby."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /lobby {name}")
@@ -358,7 +358,7 @@ class Matchmaking(commands.Cog):
     async def start_command(
         self,
         ctx: discord.ApplicationContext,
-        name: str = discord.Option(description="Name of the lobby to start", required=True)
+        name: str = discord.Option(description="Name of the lobby to start", required=True, autocomplete=lobby_name_autocomplete)
     ):
         """Start a debate round from a specific lobby."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /start {name}")
@@ -453,7 +453,7 @@ class Matchmaking(commands.Cog):
     async def end_command(
         self,
         ctx: discord.ApplicationContext,
-        name: str = discord.Option(description="Name of the lobby to disband", required=True)
+        name: str = discord.Option(description="Name of the lobby to disband", required=True, autocomplete=lobby_name_autocomplete)
     ):
         """Disband a lobby. Only the lobby's host can do this."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /end {name}")
@@ -507,7 +507,7 @@ class Matchmaking(commands.Cog):
     async def clear_queue_command(
         self,
         ctx: discord.ApplicationContext,
-        name: str = discord.Option(description="Name of the lobby to clear", required=True)
+        name: str = discord.Option(description="Name of the lobby to clear", required=True, autocomplete=lobby_name_autocomplete)
     ):
         """Clear a specific lobby's queue."""
         lobby = self.lobby_manager.get_lobby(name)
