@@ -547,6 +547,71 @@ class Matchmaking(commands.Cog):
             ephemeral=False
         )
 
+    # ── /about ───────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="about",
+        description="Learn about the AP Matchmaking Bot and its commands",
+        default_member_permissions=None
+    )
+    async def about_command(self, ctx: discord.ApplicationContext):
+        """Show bot info, commands, and round mechanics."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /about")
+
+        embed = discord.Embed(
+            title="AP Matchmaking Bot",
+            description="Automated matchmaking for AP-style parliamentary debate rounds.",
+            color=discord.Color.blue()
+        )
+
+        embed.add_field(
+            name="📋 Commands",
+            value=(
+                "**/createqueue <name>** (or **/cq**) — Create a new lobby *(Host)*\n"
+                "**/join <name> <role>** — Join a lobby as **debater** or **judge**\n"
+                "**/leave <name>** — Leave a lobby\n"
+                "**/lobby <name>** — View a lobby's status\n"
+                "**/lobbies** — List all lobbies you're in\n"
+                "**/start <name>** — Start a round from a lobby *(Host)*\n"
+                "**/end <name>** — Disband a lobby *(Host)*\n"
+                "**/clearqueue <name>** — Clear a lobby's queue *(Admin)*\n"
+                "**/about** — This message"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="⚙️ How Rounds Work",
+            value=(
+                "A host creates a lobby with **/createqueue**, then players "
+                "**/join** as debaters or judges. When the host runs **/start**, "
+                "the bot checks whether there are enough players and determines "
+                "the round format automatically:\n\n"
+                "• **PM-LO Speech (1v1)** — 2 debaters + 1 judge (minimum to start)\n"
+                "• **Double Iron (2v2)** — 4 debaters + 1 judge\n"
+                "• **Single Iron (3v2 or 2v3)** — 5 debaters + 1 judge\n"
+                "• **Standard (3v3)** — 6+ debaters + 1+ judges\n\n"
+                "Debaters are randomly shuffled into Government and Opposition "
+                "teams and assigned speaking positions (PM, DPM, GW / LO, DLO, OW). "
+                "Extra participants beyond what the round needs are placed as judges."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🔧 After Allocation",
+            value=(
+                "The host receives an interactive panel to adjust the allocation — "
+                "swap members between teams, toggle team sizes "
+                "(Full ↔ Iron ↔ Solo), or move players between debater and judge "
+                "roles — before confirming the final round."
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="AP Matchmaking Bot • debate.gg")
+        await ctx.respond(embed=embed, ephemeral=False)
+
 
 def setup(bot):
     bot.add_cog(Matchmaking(bot))
