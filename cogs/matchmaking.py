@@ -407,6 +407,97 @@ class Matchmaking(commands.Cog):
         await ctx.respond(embed=embed, ephemeral=False)
 
     @discord.slash_command(
+        name="start",
+        description="Start a debate round from the current queue (Host only)",
+        default_member_permissions=None
+    )
+    async def start_command(self, ctx: discord.ApplicationContext):
+        """Start a debate round. Only the host can use this command."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /start command")
+
+        # Check if user is the host
+        is_host = False
+        if Config.HOST_ROLE_ID:
+            is_host = any(role.id == Config.HOST_ROLE_ID for role in ctx.author.roles)
+        if not is_host:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "Permission Denied",
+                    "Only the host can start a debate round."
+                ),
+                ephemeral=False
+            )
+            return
+
+        # Check minimum requirements: at least 4 debaters and 1 judge
+        debaters = self.queue.debater_count()
+        judges = self.queue.judge_count()
+
+        if debaters < 4 or judges < 1:
+            needed = []
+            if debaters < 4:
+                needed.append(f"**{4 - debaters}** more debater(s)")
+            if judges < 1:
+                needed.append(f"**1** judge")
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "Not Enough Players",
+                    f"Cannot start a round. Need at least **4 debaters** and **1 judge**.\n"
+                    f"Currently: **{debaters}** debater(s), **{judges}** judge(s).\n"
+                    f"Still need: {', '.join(needed)}."
+                ),
+                ephemeral=False
+            )
+            return
+
+        # Determine round type from queue
+        round_type = self.queue.get_threshold_type()
+        if round_type is None:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "Cannot Start",
+                    "The current queue composition doesn't match any round type."
+                ),
+                ephemeral=False
+            )
+            return
+
+        # Acknowledge the command
+        await ctx.respond(
+            embed=EmbedBuilder.create_success_embed(
+                "Starting Round",
+                f"Creating a **{round_type.value.replace('_', ' ').title()}** round with "
+                f"**{debaters}** debaters and **{judges}** judge(s)..."
+            ),
+            ephemeral=False
+        )
+
+        # Create the round allocation
+        debate_round = self.create_round_allocation(
+            list(self.queue.debaters),
+            list(self.queue.judges),
+            round_type
+        )
+
+        # Store the round
+        self.current_round = debate_round
+
+        # Clear the queue and update lobby
+        self.queue.clear()
+        await self.update_lobby_display()
+
+        # Delete host notification if it exists
+        if self.host_notification_message:
+            try:
+                await self.host_notification_message.delete()
+            except:
+                pass
+            self.host_notification_message = None
+
+        # Show allocation interface in the same channel
+        await self.show_allocation_interface(ctx.channel, debate_round)
+
+    @discord.slash_command(
         name="clearqueue",
         description="Clear the entire matchmaking queue (Admin only)"
     )
