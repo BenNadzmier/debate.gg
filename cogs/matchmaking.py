@@ -396,6 +396,17 @@ class Matchmaking(commands.Cog):
             )
 
     @discord.slash_command(
+        name="lobby",
+        description="Show the AP Debate Matchmaking Lobby info",
+        default_member_permissions=None
+    )
+    async def lobby_command(self, ctx: discord.ApplicationContext):
+        """Show the lobby infobox with current queue status."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /lobby command")
+        embed = EmbedBuilder.create_lobby_embed(self.queue)
+        await ctx.respond(embed=embed, ephemeral=False)
+
+    @discord.slash_command(
         name="clearqueue",
         description="Clear the entire matchmaking queue (Admin only)"
     )
