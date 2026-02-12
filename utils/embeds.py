@@ -16,10 +16,29 @@ class EmbedBuilder:
     @staticmethod
     def create_lobby_embed(queue: MatchmakingQueue) -> discord.Embed:
         """Create the lobby embed showing queued users."""
+        host_name = queue.host.display_name if queue.host else "Unknown"
         embed = discord.Embed(
-            title="🎭 AP Debate Matchmaking Lobby",
-            description="Join the queue to participate in a debate round!\nUse `/queue debater` or `/queue judge`",
+            title=f"🎭 {queue.name}",
+            description=f"**{host_name}** started a queue\nUse `/join {queue.name} <debater|judge>` to participate!",
             color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        embed.add_field(
+            name="Host",
+            value=queue.host.mention if queue.host else "*Unknown*",
+            inline=True
+        )
+
+        embed.add_field(
+            name="\u200b",
+            value="\u200b",
+            inline=True
+        )
+
+        embed.add_field(
+            name="Lobby Name",
+            value=queue.name,
+            inline=True
         )
 
         if queue.size() == 0:
@@ -61,7 +80,32 @@ class EmbedBuilder:
             inline=False
         )
 
-        embed.set_footer(text="Use /queue <debater|judge> to join • Use /leave to exit queue")
+        embed.set_footer(text=f"Use /join {queue.name} <debater|judge> to join • Use /leave {queue.name} to exit")
+        return embed
+
+    @staticmethod
+    def create_lobbies_list_embed(lobbies: list, user: 'discord.Member') -> discord.Embed:
+        """Create an embed listing all lobbies a user is part of."""
+        embed = discord.Embed(
+            title="📋 Your Lobbies",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        if not lobbies:
+            embed.description = "You are not in any lobbies."
+        else:
+            lines = []
+            for lobby in lobbies:
+                role = lobby.get_user_role(user)
+                is_host = lobby.host == user
+                role_str = "Host" if is_host else (role.title() if role else "—")
+                lines.append(
+                    f"**{lobby.name}** — {role_str} "
+                    f"({lobby.debater_count()} debaters, {lobby.judge_count()} judges)"
+                )
+            embed.description = "\n".join(lines)
+
+        embed.set_footer(text="Use /lobby <name> to see details • Use /leave <name> to exit")
         return embed
 
     @staticmethod

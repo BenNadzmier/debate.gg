@@ -173,7 +173,9 @@ class DebateRound:
 
 @dataclass
 class MatchmakingQueue:
-    """Manages the matchmaking queue with separate debater and judge queues."""
+    """Manages a named matchmaking queue with separate debater and judge queues."""
+    name: str = ""
+    host: Optional[discord.Member] = None
     debaters: List[discord.Member] = field(default_factory=list)
     judges: List[discord.Member] = field(default_factory=list)
     lobby_message: Optional[discord.Message] = None
@@ -255,3 +257,47 @@ class MatchmakingQueue:
         elif debaters >= 6 and judges >= 1:
             return RoundType.STANDARD
         return None
+
+
+class LobbyManager:
+    """Manages multiple named lobbies."""
+
+    def __init__(self):
+        self.lobbies: dict[str, MatchmakingQueue] = {}
+
+    def create_lobby(self, name: str, host: discord.Member) -> Optional[MatchmakingQueue]:
+        """Create a new named lobby. Returns None if name already taken."""
+        key = name.lower()
+        if key in self.lobbies:
+            return None
+        lobby = MatchmakingQueue(name=name, host=host)
+        self.lobbies[key] = lobby
+        return lobby
+
+    def get_lobby(self, name: str) -> Optional[MatchmakingQueue]:
+        """Get a lobby by name (case-insensitive)."""
+        return self.lobbies.get(name.lower())
+
+    def remove_lobby(self, name: str) -> bool:
+        """Remove a lobby by name. Returns True if removed."""
+        key = name.lower()
+        if key in self.lobbies:
+            del self.lobbies[key]
+            return True
+        return False
+
+    def get_user_lobbies(self, user: discord.Member) -> List[MatchmakingQueue]:
+        """Get all lobbies a user is part of (as participant or host)."""
+        result = []
+        for lobby in self.lobbies.values():
+            if lobby.host == user or lobby.is_in_queue(user):
+                result.append(lobby)
+        return result
+
+    def all_lobbies(self) -> List[MatchmakingQueue]:
+        """Get all active lobbies."""
+        return list(self.lobbies.values())
+
+    def lobby_names(self) -> List[str]:
+        """Get all active lobby names."""
+        return [lobby.name for lobby in self.lobbies.values()]
