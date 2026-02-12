@@ -162,21 +162,7 @@ class Matchmaking(commands.Cog):
         """Shared implementation for /createqueue and /cq."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /createqueue with name={name}")
 
-        # Check if user is host
-        is_host = False
-        if Config.HOST_ROLE_ID:
-            is_host = any(role.id == Config.HOST_ROLE_ID for role in ctx.author.roles)
-        if not is_host:
-            await ctx.respond(
-                embed=EmbedBuilder.create_error_embed(
-                    "Permission Denied",
-                    "Only the host can create a lobby."
-                ),
-                ephemeral=False
-            )
-            return
-
-        # Try to create lobby
+        # Try to create lobby — anyone can create, and they become the host
         lobby = self.lobby_manager.create_lobby(name, ctx.author)
         if lobby is None:
             await ctx.respond(
