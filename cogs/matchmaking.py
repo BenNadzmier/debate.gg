@@ -14,6 +14,16 @@ from utils.models import (
 from utils.embeds import EmbedBuilder
 
 
+async def lobby_name_autocomplete(ctx: discord.AutocompleteContext):
+    """Autocomplete callback for lobby names."""
+    cog = ctx.bot.get_cog("Matchmaking")
+    if cog is None:
+        return []
+    names = cog.lobby_manager.lobby_names()
+    current = (ctx.value or "").lower()
+    return [n for n in names if current in n.lower()][:25]
+
+
 class LobbyView(discord.ui.View):
     """Persistent view for a lobby with a leave button."""
 
@@ -47,7 +57,9 @@ class Matchmaking(commands.Cog):
     async def cog_load(self):
         """Called when the cog is loaded."""
         logger.info("Matchmaking cog loaded")
-        logger.info("Registering slash commands: /createqueue, /cq, /join, /leave, /lobby, /lobbies, /start, /end, /clearqueue")
+        logger.info("Registering slash commands: /createqueue, /cq, /join, /leave, /lobby, /lobbies, /start, /end, /clearqueue, /about")
+
+
 
     async def update_lobby_display(self, lobby: MatchmakingQueue):
         """Update the lobby embed with current queue status."""
@@ -198,7 +210,7 @@ class Matchmaking(commands.Cog):
     async def join_command(
         self,
         ctx: discord.ApplicationContext,
-        name: str = discord.Option(description="Name of the lobby to join", required=True),
+        name: str = discord.Option(description="Name of the lobby to join", required=True, autocomplete=lobby_name_autocomplete),
         role: str = discord.Option(
             description="Join as a debater or judge",
             choices=["debater", "judge"],
@@ -258,7 +270,7 @@ class Matchmaking(commands.Cog):
     async def leave_command(
         self,
         ctx: discord.ApplicationContext,
-        name: str = discord.Option(description="Name of the lobby to leave", required=True)
+        name: str = discord.Option(description="Name of the lobby to leave", required=True, autocomplete=lobby_name_autocomplete)
     ):
         """Leave a specific lobby."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /leave {name}")
@@ -350,20 +362,6 @@ class Matchmaking(commands.Cog):
     ):
         """Start a debate round from a specific lobby."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /start {name}")
-
-        # Check if user is host
-        is_host = False
-        if Config.HOST_ROLE_ID:
-            is_host = any(role.id == Config.HOST_ROLE_ID for role in ctx.author.roles)
-        if not is_host:
-            await ctx.respond(
-                embed=EmbedBuilder.create_error_embed(
-                    "Permission Denied",
-                    "Only the host can start a debate round."
-                ),
-                ephemeral=False
-            )
-            return
 
         lobby = self.lobby_manager.get_lobby(name)
         if lobby is None:
@@ -529,6 +527,32 @@ class Matchmaking(commands.Cog):
             embed=EmbedBuilder.create_success_embed(
                 "Queue Cleared",
                 f"The queue for **{lobby.name}** has been cleared."
+            ),
+            ephemeral=False
+        )
+
+    # ── /clearlobbies (admin) ────────────────────────────────────────
+
+    @discord.slash_command(
+        name="clearlobbies",
+        description="Remove all lobbies (Admin only)"
+    )
+    @commands.has_permissions(administrator=True)
+    async def clear_lobbies_command(self, ctx: discord.ApplicationContext):
+        """Remove every lobby at once."""
+        count = len(self.lobby_manager.lobbies)
+        # Try to delete lobby messages
+        for lobby in self.lobby_manager.all_lobbies():
+            if lobby.lobby_message:
+                try:
+                    await lobby.lobby_message.delete()
+                except:
+                    pass
+        self.lobby_manager.lobbies.clear()
+        await ctx.respond(
+            embed=EmbedBuilder.create_success_embed(
+                "All Lobbies Cleared",
+                f"Removed **{count}** lobby(ies). The slate is clean."
             ),
             ephemeral=False
         )
