@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from discord import SlashCommandGroup
 import random
 from typing import Optional
 import logging
@@ -10,7 +9,7 @@ from config import Config
 logger = logging.getLogger('DebateBot.Matchmaking')
 from utils.models import (
     MatchmakingQueue, DebateRound, DebateTeam, JudgePanel,
-    TeamType, RoundType
+    TeamType, RoundType, FormatType
 )
 from utils.embeds import EmbedBuilder
 
@@ -18,22 +17,34 @@ from utils.embeds import EmbedBuilder
 class HostControlView(discord.ui.View):
     """View for host controls to start rounds."""
 
-    def __init__(self, cog, round_type: RoundType, queue_debaters: list, queue_judges: list):
+    def __init__(self, cog, round_type: RoundType, queue_debaters: list, queue_judges: list, format_label: str):
         super().__init__(timeout=None)
         self.cog = cog
         self.round_type = round_type
         self.queue_debaters = queue_debaters
         self.queue_judges = queue_judges
+        self.format_label = format_label
 
         # Add buttons based on round type
-        if round_type == RoundType.DOUBLE_IRON:
+        if round_type == RoundType.PM_LO:
+            self.add_item(StartRoundButton(
+                label="Start 1v1 Round (PM vs LO)",
+                style=discord.ButtonStyle.primary,
+                round_type=round_type,
+                cog=cog,
+                queue_debaters=queue_debaters,
+                queue_judges=queue_judges,
+                format_label=format_label
+            ))
+        elif round_type == RoundType.DOUBLE_IRON:
             self.add_item(StartRoundButton(
                 label="Start Double Iron Round (2v2)",
                 style=discord.ButtonStyle.primary,
                 round_type=round_type,
                 cog=cog,
                 queue_debaters=queue_debaters,
-                queue_judges=queue_judges
+                queue_judges=queue_judges,
+                format_label=format_label
             ))
         elif round_type == RoundType.SINGLE_IRON:
             self.add_item(StartRoundButton(
@@ -42,7 +53,8 @@ class HostControlView(discord.ui.View):
                 round_type=round_type,
                 cog=cog,
                 queue_debaters=queue_debaters,
-                queue_judges=queue_judges
+                queue_judges=queue_judges,
+                format_label=format_label
             ))
         elif round_type == RoundType.STANDARD:
             self.add_item(StartRoundButton(
@@ -51,7 +63,8 @@ class HostControlView(discord.ui.View):
                 round_type=round_type,
                 cog=cog,
                 queue_debaters=queue_debaters,
-                queue_judges=queue_judges
+                queue_judges=queue_judges,
+                format_label=format_label
             ))
             self.add_item(WaitForPanelistsButton(cog=cog))
 
@@ -59,12 +72,13 @@ class HostControlView(discord.ui.View):
 class StartRoundButton(discord.ui.Button):
     """Button to start a debate round."""
 
-    def __init__(self, label: str, style: discord.ButtonStyle, round_type: RoundType, cog, queue_debaters: list, queue_judges: list):
+    def __init__(self, label: str, style: discord.ButtonStyle, round_type: RoundType, cog, queue_debaters: list, queue_judges: list, format_label: str):
         super().__init__(label=label, style=style)
         self.round_type = round_type
         self.cog = cog
         self.queue_debaters = queue_debaters
         self.queue_judges = queue_judges
+        self.format_label = format_label
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -75,8 +89,9 @@ class StartRoundButton(discord.ui.Button):
         # Store the round
         self.cog.current_round = debate_round
 
-        # Clear the queue
-        self.cog.queue.clear()
+        # Clear the correct queue
+        queue = self.cog._get_queue(self.format_label)
+        queue.clear()
         await self.cog.update_lobby_display()
 
         # Disable this view
@@ -98,7 +113,7 @@ class WaitForPanelistsButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_message(
-            "✅ Continuing to wait for additional panelists. The queue remains open.",
+            "Continuing to wait for additional panelists. The queue remains open.",
             ephemeral=True
         )
 
@@ -113,12 +128,15 @@ class LobbyView(discord.ui.View):
     @discord.ui.button(label="Leave Queue", style=discord.ButtonStyle.danger, custom_id="leave_queue")
     async def leave_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         """Handle leave queue button press."""
-        if self.cog.queue.remove_user(interaction.user):
-            await interaction.response.send_message("✅ You have left the queue.", ephemeral=True)
+        removed_1v1 = self.cog.queue_1v1.remove_user(interaction.user)
+        removed_ap = self.cog.queue_ap.remove_user(interaction.user)
+
+        if removed_1v1 or removed_ap:
+            await interaction.response.send_message("You have left the queue.", ephemeral=True)
             await self.cog.update_lobby_display()
             await self.cog.check_matchmaking_threshold()
         else:
-            await interaction.response.send_message("❌ You are not in the queue.", ephemeral=True)
+            await interaction.response.send_message("You are not in the queue.", ephemeral=True)
 
 
 class Matchmaking(commands.Cog):
@@ -126,16 +144,22 @@ class Matchmaking(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self.queue = MatchmakingQueue()
+        self.queue_1v1 = MatchmakingQueue(format_type=FormatType.ONE_V_ONE)
+        self.queue_ap = MatchmakingQueue(format_type=FormatType.AP)
+        self.lobby_message: Optional[discord.Message] = None
         self.current_round: Optional[DebateRound] = None
         self.round_counter = 0
-        self.host_notification_message: Optional[discord.Message] = None
+        self.host_notification_1v1: Optional[discord.Message] = None
+        self.host_notification_ap: Optional[discord.Message] = None
+
+    def _get_queue(self, format_name: str) -> MatchmakingQueue:
+        """Get the queue for a given format."""
+        return self.queue_1v1 if format_name == "1v1" else self.queue_ap
 
     async def cog_load(self):
         """Called when the cog is loaded."""
         logger.info("Matchmaking cog loaded")
-        logger.info("Registering slash commands: /queue, /leave, /clearqueue")
-        # Initialize lobby display
+        logger.info("Registering slash commands: /queue, /leave, /clearqueue, /guide")
         await self.initialize_lobby()
 
     async def initialize_lobby(self):
@@ -148,58 +172,64 @@ class Matchmaking(commands.Cog):
                 logger.warning("Make sure the bot has access to this channel and the ID is correct")
                 return
 
-            logger.info(f"✓ Found lobby channel: {lobby_channel.name}")
+            logger.info(f"Found lobby channel: {lobby_channel.name}")
 
-            # Check if we already have a lobby message
-            if self.queue.lobby_message:
+            if self.lobby_message:
                 try:
-                    await self.queue.lobby_message.delete()
+                    await self.lobby_message.delete()
                 except:
                     pass
 
-            # Create new lobby message
-            embed = EmbedBuilder.create_lobby_embed(self.queue)
+            embed = EmbedBuilder.create_lobby_embed(self.queue_1v1, self.queue_ap)
             view = LobbyView(self)
-            self.queue.lobby_message = await lobby_channel.send(embed=embed, view=view)
-            logger.info("✓ Lobby embed created successfully")
+            self.lobby_message = await lobby_channel.send(embed=embed, view=view)
+            logger.info("Lobby embed created successfully")
 
         except Exception as e:
             logger.error(f"Error initializing lobby: {e}", exc_info=True)
 
     async def update_lobby_display(self):
         """Update the lobby embed with current queue status."""
-        if not self.queue.lobby_message:
+        if not self.lobby_message:
             await self.initialize_lobby()
             return
 
         try:
-            embed = EmbedBuilder.create_lobby_embed(self.queue)
+            embed = EmbedBuilder.create_lobby_embed(self.queue_1v1, self.queue_ap)
             view = LobbyView(self)
-            await self.queue.lobby_message.edit(embed=embed, view=view)
+            await self.lobby_message.edit(embed=embed, view=view)
         except discord.NotFound:
-            # Message was deleted, reinitialize
             await self.initialize_lobby()
         except Exception as e:
             print(f"Error updating lobby display: {e}")
 
     async def check_matchmaking_threshold(self):
-        """Check if queue has reached a matchmaking threshold."""
-        threshold = self.queue.get_threshold_type()
-
-        if threshold is None:
-            # Clear host notification if it exists and queue is below threshold
-            if self.host_notification_message:
+        """Check if either queue has reached a matchmaking threshold."""
+        # Check 1v1 queue
+        threshold_1v1 = self.queue_1v1.get_threshold_type()
+        if threshold_1v1:
+            await self.send_host_notification(threshold_1v1, self.queue_1v1, "1v1")
+        else:
+            if self.host_notification_1v1:
                 try:
-                    await self.host_notification_message.delete()
+                    await self.host_notification_1v1.delete()
                 except:
                     pass
-                self.host_notification_message = None
-            return
+                self.host_notification_1v1 = None
 
-        # Send or update host notification
-        await self.send_host_notification(threshold)
+        # Check AP queue
+        threshold_ap = self.queue_ap.get_threshold_type()
+        if threshold_ap:
+            await self.send_host_notification(threshold_ap, self.queue_ap, "AP")
+        else:
+            if self.host_notification_ap:
+                try:
+                    await self.host_notification_ap.delete()
+                except:
+                    pass
+                self.host_notification_ap = None
 
-    async def send_host_notification(self, round_type: RoundType):
+    async def send_host_notification(self, round_type: RoundType, queue: MatchmakingQueue, format_label: str):
         """Send notification to host channel about ready queue."""
         try:
             host_channel = self.bot.get_channel(Config.HOST_CHANNEL_ID)
@@ -208,21 +238,27 @@ class Matchmaking(commands.Cog):
                 return
 
             embed = EmbedBuilder.create_host_notification_embed(
-                self.queue.debater_count(),
-                self.queue.judge_count(),
+                queue.debater_count(),
+                queue.judge_count(),
                 round_type
             )
             view = HostControlView(
                 self,
                 round_type,
-                list(self.queue.debaters),
-                list(self.queue.judges)
+                list(queue.debaters),
+                list(queue.judges),
+                format_label
             )
 
-            # Delete old notification if exists
-            if self.host_notification_message:
+            # Delete old notification for this format
+            if format_label == "1v1":
+                old_msg = self.host_notification_1v1
+            else:
+                old_msg = self.host_notification_ap
+
+            if old_msg:
                 try:
-                    await self.host_notification_message.delete()
+                    await old_msg.delete()
                 except:
                     pass
 
@@ -231,11 +267,16 @@ class Matchmaking(commands.Cog):
             if Config.HOST_ROLE_ID:
                 content = f"<@&{Config.HOST_ROLE_ID}>"
 
-            self.host_notification_message = await host_channel.send(
+            msg = await host_channel.send(
                 content=content,
                 embed=embed,
                 view=view
             )
+
+            if format_label == "1v1":
+                self.host_notification_1v1 = msg
+            else:
+                self.host_notification_ap = msg
 
         except Exception as e:
             print(f"Error sending host notification: {e}")
@@ -250,11 +291,22 @@ class Matchmaking(commands.Cog):
         random.shuffle(shuffled_debaters)
         random.shuffle(shuffled_judges)
 
-        # Initialize teams and judge panel
+        # Initialize judge panel
         judge_panel = JudgePanel()
 
         # Allocate teams based on round type
-        if round_type == RoundType.DOUBLE_IRON:
+        if round_type == RoundType.PM_LO:
+            # 1v1: 1 debater per side, 1+ judges
+            gov_team = DebateTeam("Government", TeamType.SOLO)
+            opp_team = DebateTeam("Opposition", TeamType.SOLO)
+
+            gov_team.members = [shuffled_debaters[0]]
+            opp_team.members = [shuffled_debaters[1]]
+
+            for judge in shuffled_judges:
+                judge_panel.add_judge(judge)
+
+        elif round_type == RoundType.DOUBLE_IRON:
             # 4 debaters: 2v2, 1+ judges
             gov_team = DebateTeam("Government", TeamType.IRON)
             opp_team = DebateTeam("Opposition", TeamType.IRON)
@@ -262,13 +314,11 @@ class Matchmaking(commands.Cog):
             gov_team.members = shuffled_debaters[0:2]
             opp_team.members = shuffled_debaters[2:4]
 
-            # Assign judges
             for judge in shuffled_judges:
                 judge_panel.add_judge(judge)
 
         elif round_type == RoundType.SINGLE_IRON:
             # 5 debaters: One full team (3), one iron team (2), 1+ judges
-            # Randomly decide which team is iron
             gov_is_iron = random.choice([True, False])
 
             gov_team = DebateTeam("Government", TeamType.IRON if gov_is_iron else TeamType.FULL)
@@ -281,7 +331,6 @@ class Matchmaking(commands.Cog):
                 gov_team.members = shuffled_debaters[0:3]
                 opp_team.members = shuffled_debaters[3:5]
 
-            # Assign judges
             for judge in shuffled_judges:
                 judge_panel.add_judge(judge)
 
@@ -293,7 +342,6 @@ class Matchmaking(commands.Cog):
             gov_team.members = shuffled_debaters[0:3]
             opp_team.members = shuffled_debaters[3:6]
 
-            # Assign all judges
             for judge in shuffled_judges:
                 judge_panel.add_judge(judge)
 
@@ -307,7 +355,6 @@ class Matchmaking(commands.Cog):
 
     async def show_allocation_interface(self, channel, debate_round: DebateRound):
         """Show the allocation interface with adjustment controls."""
-        # Import here to avoid circular import
         from cogs.adjustment import AllocationAdjustmentView
 
         embed = EmbedBuilder.create_allocation_embed(debate_round)
@@ -317,7 +364,7 @@ class Matchmaking(commands.Cog):
     @discord.slash_command(
         name="queue",
         description="Join the matchmaking queue for a debate round",
-        default_member_permissions=None  # Allow everyone to use this command
+        default_member_permissions=None
     )
     async def queue_command(
         self,
@@ -326,55 +373,65 @@ class Matchmaking(commands.Cog):
             description="Queue as a debater or judge",
             choices=["debater", "judge"],
             required=True
+        ),
+        debate_format: str = discord.Option(
+            name="format",
+            description="Debate format",
+            choices=["1v1", "AP"],
+            required=True
         )
     ):
-        """Join the matchmaking queue as debater or judge."""
-        logger.info(f"User {ctx.author} ({ctx.author.id}) used /queue command as {role}")
+        """Join the matchmaking queue as debater or judge for a specific format."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /queue as {role} for {debate_format}")
+
+        queue = self._get_queue(debate_format)
+        other_queue = self.queue_ap if debate_format == "1v1" else self.queue_1v1
+
+        # Remove from the other format's queue if present
+        other_queue.remove_user(ctx.author)
 
         # Add user to appropriate queue
         if role == "debater":
-            success = self.queue.add_debater(ctx.author)
-            role_text = "debater"
+            success = queue.add_debater(ctx.author)
         else:
-            success = self.queue.add_judge(ctx.author)
-            role_text = "judge"
+            success = queue.add_judge(ctx.author)
+
+        format_display = "1v1" if debate_format == "1v1" else "AP"
 
         if success:
-            # RESPOND IMMEDIATELY to avoid interaction timeout
             await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(
-                    f"Joined Queue as {role_text.title()}",
-                    f"You have been added to the {role_text} queue.\n"
-                    f"**Debaters:** {self.queue.debater_count()} | **Judges:** {self.queue.judge_count()}"
+                    f"Joined {format_display} Queue as {role.title()}",
+                    f"You have been added to the {format_display} {role} queue.\n"
+                    f"**Debaters:** {queue.debater_count()} | **Judges:** {queue.judge_count()}"
+                )
+            )
+        else:
+            current_role = queue.get_user_role(ctx.author)
+            await ctx.respond(
+                embed=EmbedBuilder.create_success_embed(
+                    f"Switched to {role.title()} in {format_display}",
+                    f"You have been moved to {role} in the {format_display} queue.\n"
+                    f"**Debaters:** {queue.debater_count()} | **Judges:** {queue.judge_count()}"
                 )
             )
 
-            # Then update lobby and check threshold AFTER responding
-            await self.update_lobby_display()
-            await self.check_matchmaking_threshold()
-        else:
-            # User switched roles - this shouldn't normally happen but handle it
-            current_role = self.queue.get_user_role(ctx.author)
-            await ctx.respond(
-                embed=EmbedBuilder.create_success_embed(
-                    f"Switched to {role_text.title()}",
-                    f"You have been moved from {current_role} to {role_text} queue.\n"
-                    f"**Debaters:** {self.queue.debater_count()} | **Judges:** {self.queue.judge_count()}"
-                )
-            )
+        await self.update_lobby_display()
+        await self.check_matchmaking_threshold()
 
     @discord.slash_command(
         name="leave",
         description="Leave the matchmaking queue",
-        default_member_permissions=None  # Allow everyone to use this command
+        default_member_permissions=None
     )
     async def leave_command(self, ctx: discord.ApplicationContext):
         """Leave the matchmaking queue."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /leave command")
 
-        # Remove user from queue
-        if self.queue.remove_user(ctx.author):
-            # RESPOND IMMEDIATELY to avoid interaction timeout
+        removed_1v1 = self.queue_1v1.remove_user(ctx.author)
+        removed_ap = self.queue_ap.remove_user(ctx.author)
+
+        if removed_1v1 or removed_ap:
             await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(
                     "Left Queue",
@@ -382,8 +439,6 @@ class Matchmaking(commands.Cog):
                 ),
                 ephemeral=False
             )
-
-            # Then update lobby and check threshold AFTER responding
             await self.update_lobby_display()
             await self.check_matchmaking_threshold()
         else:
@@ -402,16 +457,27 @@ class Matchmaking(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def clear_queue_command(self, ctx: discord.ApplicationContext):
         """Clear the entire queue."""
-        self.queue.clear()
+        self.queue_1v1.clear()
+        self.queue_ap.clear()
         await self.update_lobby_display()
         await self.check_matchmaking_threshold()
         await ctx.respond(
             embed=EmbedBuilder.create_success_embed(
                 "Queue Cleared",
-                "The matchmaking queue has been cleared."
+                "All matchmaking queues have been cleared."
             ),
             ephemeral=False
         )
+
+    @discord.slash_command(
+        name="guide",
+        description="Learn how the debate bot works",
+        default_member_permissions=None
+    )
+    async def guide_command(self, ctx: discord.ApplicationContext):
+        """Show the guide for how the bot works."""
+        embed = EmbedBuilder.create_guide_embed()
+        await ctx.respond(embed=embed)
 
 
 def setup(bot):

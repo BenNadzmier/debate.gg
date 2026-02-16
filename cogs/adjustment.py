@@ -174,6 +174,13 @@ class ToggleTeamTypeView(discord.ui.View):
 
     async def _toggle_team(self, interaction: discord.Interaction, team):
         """Toggle a team between Full and Iron."""
+        if team.team_type == TeamType.SOLO:
+            await interaction.response.send_message(
+                "Cannot change team type for 1v1 rounds.",
+                ephemeral=True
+            )
+            return
+
         if team.team_type == TeamType.FULL:
             # Check if we can reduce to Iron (need to remove 1 member)
             if len(team.members) > 2:

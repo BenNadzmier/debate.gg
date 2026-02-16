@@ -1,6 +1,6 @@
 import discord
 from typing import List
-from utils.models import DebateRound, MatchmakingQueue, RoundType, TeamType
+from utils.models import DebateRound, MatchmakingQueue, RoundType, TeamType, FormatType
 
 
 class EmbedBuilder:
@@ -14,101 +14,118 @@ class EmbedBuilder:
     COLOR_OPP = 0xE74C3C  # Red for Opposition
 
     @staticmethod
-    def create_lobby_embed(queue: MatchmakingQueue) -> discord.Embed:
-        """Create the lobby embed showing queued users."""
+    def create_lobby_embed(queue_1v1: MatchmakingQueue, queue_ap: MatchmakingQueue) -> discord.Embed:
+        """Create the lobby embed showing both format queues."""
         embed = discord.Embed(
-            title="🎭 AP Debate Matchmaking Lobby",
-            description="Join the queue to participate in a debate round!\nUse `/queue debater` or `/queue judge`",
+            title="Debate Matchmaking Lobby",
+            description="Use `/queue` to join a format. Use `/guide` for help.",
             color=EmbedBuilder.COLOR_PRIMARY
         )
 
-        if queue.size() == 0:
-            embed.add_field(
-                name="Queue Status",
-                value="*No one in queue*",
-                inline=False
-            )
-        else:
-            # Debaters list
-            if queue.debater_count() > 0:
-                debater_list = "\n".join([f"{i+1}. {user.mention}" for i, user in enumerate(queue.debaters)])
-            else:
-                debater_list = "*No debaters in queue*"
-
-            embed.add_field(
-                name=f"🗣️ Debaters ({queue.debater_count()})",
-                value=debater_list,
-                inline=True
-            )
-
-            # Judges list
-            if queue.judge_count() > 0:
-                judge_list = "\n".join([f"{i+1}. {user.mention}" for i, user in enumerate(queue.judges)])
-            else:
-                judge_list = "*No judges in queue*"
-
-            embed.add_field(
-                name=f"⚖️ Judges ({queue.judge_count()})",
-                value=judge_list,
-                inline=True
-            )
-
-        # Show threshold information
-        threshold_info = EmbedBuilder._get_threshold_info(queue.debater_count(), queue.judge_count())
+        # 1v1 section
+        members_1v1 = EmbedBuilder._format_queue_members(queue_1v1)
+        status_1v1 = EmbedBuilder._get_format_status(queue_1v1)
         embed.add_field(
-            name="Matchmaking Thresholds",
-            value=threshold_info,
+            name="1v1 Format (PM vs LO)",
+            value=f"{members_1v1}\n{status_1v1}",
             inline=False
         )
 
-        embed.set_footer(text="Use /queue <debater|judge> to join • Use /leave to exit queue")
+        # AP section
+        members_ap = EmbedBuilder._format_queue_members(queue_ap)
+        status_ap = EmbedBuilder._get_format_status(queue_ap)
+        embed.add_field(
+            name="AP Format (Asian Parliamentary)",
+            value=f"{members_ap}\n{status_ap}",
+            inline=False
+        )
+
+        embed.set_footer(text="/queue <role> <format> to join | /leave to exit")
         return embed
 
     @staticmethod
-    def _get_threshold_info(debater_count: int, judge_count: int) -> str:
-        """Get threshold information based on current queue composition."""
-        thresholds = [
-            (4, 1, "Double Iron Round (2v2)"),
-            (5, 1, "Single Iron Round (3v2 or 2v3)"),
-            (6, 1, "Standard Round (3v3)")
-        ]
+    def _format_queue_members(queue: MatchmakingQueue) -> str:
+        """Format queue members into a compact display."""
+        if queue.debater_count() > 0:
+            debater_mentions = ", ".join(u.mention for u in queue.debaters)
+            debater_line = f"Debaters ({queue.debater_count()}): {debater_mentions}"
+        else:
+            debater_line = "Debaters (0): --"
 
-        lines = []
-        for debaters_needed, judges_needed, desc in thresholds:
-            if debater_count >= debaters_needed and judge_count >= judges_needed:
-                status = "✅"
-            else:
-                status = "⬜"
-            lines.append(f"{status} **{debaters_needed} Debaters + {judges_needed} Judge**: {desc}")
+        if queue.judge_count() > 0:
+            judge_mentions = ", ".join(u.mention for u in queue.judges)
+            judge_line = f"Judges ({queue.judge_count()}): {judge_mentions}"
+        else:
+            judge_line = "Judges (0): --"
 
-        return "\n".join(lines)
+        return f"{debater_line}\n{judge_line}"
+
+    @staticmethod
+    def _get_format_status(queue: MatchmakingQueue) -> str:
+        """Get status line for a format queue."""
+        threshold = queue.get_threshold_type()
+        if threshold is not None:
+            labels = {
+                RoundType.PM_LO: "1v1 (PM vs LO)",
+                RoundType.DOUBLE_IRON: "Double Iron (2v2)",
+                RoundType.SINGLE_IRON: "Single Iron (3v2)",
+                RoundType.STANDARD: "Standard (3v3)",
+            }
+            return f"**Ready for {labels[threshold]}!**"
+
+        debaters = queue.debater_count()
+        judges = queue.judge_count()
+
+        if queue.format_type == FormatType.ONE_V_ONE:
+            need_d = max(0, 2 - debaters)
+            need_j = max(0, 1 - judges)
+        else:
+            need_d = max(0, 4 - debaters)
+            need_j = max(0, 1 - judges)
+
+        parts = []
+        if need_d > 0:
+            parts.append(f"{need_d} more debater{'s' if need_d != 1 else ''}")
+        if need_j > 0:
+            parts.append(f"{need_j} more judge{'s' if need_j != 1 else ''}")
+
+        if parts:
+            return f"Need {' and '.join(parts)}"
+        return ""
 
     @staticmethod
     def create_host_notification_embed(debater_count: int, judge_count: int, round_type: RoundType) -> discord.Embed:
         """Create notification embed for the host channel."""
         total = debater_count + judge_count
         embed = discord.Embed(
-            title="🔔 Matchmaking Ready!",
+            title="Matchmaking Ready!",
             color=EmbedBuilder.COLOR_WARNING
         )
 
-        if round_type == RoundType.DOUBLE_IRON:
+        if round_type == RoundType.PM_LO:
+            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **1v1 Round** (PM vs LO)!"
+            embed.add_field(
+                name="Configuration",
+                value=f"Government: 1 Debater (PM)\nOpposition: 1 Debater (LO)\nJudge: {judge_count}",
+                inline=False
+            )
+        elif round_type == RoundType.DOUBLE_IRON:
             embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Double Iron Round** (2v2)!"
             embed.add_field(
                 name="Configuration",
-                value=f"• Government: 2 Debaters (Iron)\n• Opposition: 2 Debaters (Iron)\n• Judges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
+                value=f"Government: 2 Debaters (Iron)\nOpposition: 2 Debaters (Iron)\nJudges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
                 inline=False
             )
         elif round_type == RoundType.SINGLE_IRON:
             embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Single Iron Round**!"
             embed.add_field(
                 name="Configuration",
-                value=f"• One Full Team: 3 Debaters\n• One Iron Team: 2 Debaters\n• Judges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
+                value=f"One Full Team: 3 Debaters\nOne Iron Team: 2 Debaters\nJudges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
                 inline=False
             )
         elif round_type == RoundType.STANDARD:
             embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Standard Round**!"
-            config_text = f"• Government: 3 Debaters\n• Opposition: 3 Debaters\n• Judges: {judge_count} (Chair"
+            config_text = f"Government: 3 Debaters\nOpposition: 3 Debaters\nJudges: {judge_count} (Chair"
             if judge_count > 1:
                 config_text += f" + {judge_count-1} Panelist{'s' if judge_count > 2 else ''}"
             config_text += ")"
@@ -125,7 +142,7 @@ class EmbedBuilder:
     def create_allocation_embed(debate_round: DebateRound) -> discord.Embed:
         """Create the allocation embed showing team and judge assignments."""
         embed = discord.Embed(
-            title="📋 Round Allocation",
+            title="Round Allocation",
             description="Review the allocations below. Use the controls to make adjustments.",
             color=EmbedBuilder.COLOR_PRIMARY
         )
@@ -133,7 +150,7 @@ class EmbedBuilder:
         # Government Team
         gov_text = EmbedBuilder._format_team_text(debate_round.government)
         embed.add_field(
-            name=f"🔵 Government Team ({debate_round.government.team_type.value.title()})",
+            name=f"Government Team ({debate_round.government.team_type.value.title()})",
             value=gov_text,
             inline=True
         )
@@ -141,7 +158,7 @@ class EmbedBuilder:
         # Opposition Team
         opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
         embed.add_field(
-            name=f"🔴 Opposition Team ({debate_round.opposition.team_type.value.title()})",
+            name=f"Opposition Team ({debate_round.opposition.team_type.value.title()})",
             value=opp_text,
             inline=True
         )
@@ -152,7 +169,7 @@ class EmbedBuilder:
         # Judges
         judge_text = EmbedBuilder._format_judge_text(debate_round.judges)
         embed.add_field(
-            name="⚖️ Judging Panel",
+            name="Judging Panel",
             value=judge_text,
             inline=False
         )
@@ -193,7 +210,7 @@ class EmbedBuilder:
     def create_confirmed_round_embed(debate_round: DebateRound, motion: str) -> discord.Embed:
         """Create the final confirmed round embed."""
         embed = discord.Embed(
-            title="🎭 Debate Round Starting!",
+            title="Debate Round Starting!",
             description=f"**Motion**: {motion}",
             color=EmbedBuilder.COLOR_SUCCESS
         )
@@ -201,7 +218,7 @@ class EmbedBuilder:
         # Government Team
         gov_text = EmbedBuilder._format_team_text(debate_round.government)
         embed.add_field(
-            name=f"🔵 Government Team",
+            name="Government Team",
             value=gov_text,
             inline=True
         )
@@ -209,7 +226,7 @@ class EmbedBuilder:
         # Opposition Team
         opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
         embed.add_field(
-            name=f"🔴 Opposition Team",
+            name="Opposition Team",
             value=opp_text,
             inline=True
         )
@@ -220,7 +237,7 @@ class EmbedBuilder:
         # Judges
         judge_text = EmbedBuilder._format_judge_text(debate_round.judges)
         embed.add_field(
-            name="⚖️ Judging Panel",
+            name="Judging Panel",
             value=judge_text,
             inline=False
         )
@@ -238,10 +255,67 @@ class EmbedBuilder:
         return embed
 
     @staticmethod
+    def create_guide_embed() -> discord.Embed:
+        """Create the guide embed explaining how the bot works."""
+        embed = discord.Embed(
+            title="Debate Bot Guide",
+            description="Everything you need to know about using the debate matchmaking bot.",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        embed.add_field(
+            name="How to Queue",
+            value=(
+                "Use `/queue` and select your **role** (debater or judge) "
+                "and **format** (1v1 or AP).\n"
+                "Use `/leave` to exit the queue."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="1v1 Format (PM vs LO)",
+            value=(
+                "A quick head-to-head debate.\n"
+                "**Requires:** 2 debaters + 1 judge\n"
+                "**Positions:** Prime Minister vs Leader of Opposition\n"
+                "One debater argues for the motion, one argues against."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="AP Format (Asian Parliamentary)",
+            value=(
+                "Full parliamentary-style team debate.\n"
+                "**Double Iron (2v2):** 4 debaters + 1 judge\n"
+                "**Single Iron (3v2):** 5 debaters + 1 judge\n"
+                "**Standard (3v3):** 6 debaters + 1 judge\n\n"
+                "**Government:** PM, DPM, Whip\n"
+                "**Opposition:** LO, DLO, OW\n"
+                "(Iron teams use PM + Whip or LO + OW)"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="What Happens Next",
+            value=(
+                "When enough players queue, a host is notified to start the round. "
+                "The host can review and adjust allocations before confirming. "
+                "Once a motion is set, the round begins!"
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="Use /queue to get started!")
+        return embed
+
+    @staticmethod
     def create_error_embed(title: str, message: str) -> discord.Embed:
         """Create an error embed."""
         embed = discord.Embed(
-            title=f"❌ {title}",
+            title=f"{title}",
             description=message,
             color=EmbedBuilder.COLOR_DANGER
         )
@@ -251,7 +325,7 @@ class EmbedBuilder:
     def create_success_embed(title: str, message: str) -> discord.Embed:
         """Create a success embed."""
         embed = discord.Embed(
-            title=f"✅ {title}",
+            title=f"{title}",
             description=message,
             color=EmbedBuilder.COLOR_SUCCESS
         )
