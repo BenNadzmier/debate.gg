@@ -14,110 +14,6 @@ from utils.models import (
 from utils.embeds import EmbedBuilder
 
 
-class HostControlView(discord.ui.View):
-    """View for host controls to start rounds."""
-
-    def __init__(self, cog, round_type: RoundType, queue_debaters: list, queue_judges: list, format_label: str):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.round_type = round_type
-        self.queue_debaters = queue_debaters
-        self.queue_judges = queue_judges
-        self.format_label = format_label
-
-        # Add buttons based on round type
-        if round_type == RoundType.PM_LO:
-            self.add_item(StartRoundButton(
-                label="Start 1v1 Round (PM vs LO)",
-                style=discord.ButtonStyle.primary,
-                round_type=round_type,
-                cog=cog,
-                queue_debaters=queue_debaters,
-                queue_judges=queue_judges,
-                format_label=format_label
-            ))
-        elif round_type == RoundType.DOUBLE_IRON:
-            self.add_item(StartRoundButton(
-                label="Start Double Iron Round (2v2)",
-                style=discord.ButtonStyle.primary,
-                round_type=round_type,
-                cog=cog,
-                queue_debaters=queue_debaters,
-                queue_judges=queue_judges,
-                format_label=format_label
-            ))
-        elif round_type == RoundType.SINGLE_IRON:
-            self.add_item(StartRoundButton(
-                label="Start Single Iron Round",
-                style=discord.ButtonStyle.primary,
-                round_type=round_type,
-                cog=cog,
-                queue_debaters=queue_debaters,
-                queue_judges=queue_judges,
-                format_label=format_label
-            ))
-        elif round_type == RoundType.STANDARD:
-            self.add_item(StartRoundButton(
-                label="Start Standard Round (3v3)",
-                style=discord.ButtonStyle.success,
-                round_type=round_type,
-                cog=cog,
-                queue_debaters=queue_debaters,
-                queue_judges=queue_judges,
-                format_label=format_label
-            ))
-            self.add_item(WaitForPanelistsButton(cog=cog))
-
-
-class StartRoundButton(discord.ui.Button):
-    """Button to start a debate round."""
-
-    def __init__(self, label: str, style: discord.ButtonStyle, round_type: RoundType, cog, queue_debaters: list, queue_judges: list, format_label: str):
-        super().__init__(label=label, style=style)
-        self.round_type = round_type
-        self.cog = cog
-        self.queue_debaters = queue_debaters
-        self.queue_judges = queue_judges
-        self.format_label = format_label
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        # Create the round allocation
-        debate_round = self.cog.create_round_allocation(self.queue_debaters, self.queue_judges, self.round_type)
-
-        # Store the round
-        self.cog.current_round = debate_round
-
-        # Clear the correct queue
-        queue = self.cog._get_queue(self.format_label)
-        queue.clear()
-        await self.cog.update_lobby_display()
-
-        # Disable this view
-        self.view.stop()
-        for item in self.view.children:
-            item.disabled = True
-        await interaction.message.edit(view=self.view)
-
-        # Show allocation embed with adjustment controls
-        await self.cog.show_allocation_interface(interaction.channel, debate_round)
-
-
-class WaitForPanelistsButton(discord.ui.Button):
-    """Button to wait for more panelists."""
-
-    def __init__(self, cog):
-        super().__init__(label="Wait for Panelists", style=discord.ButtonStyle.secondary)
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "Continuing to wait for additional panelists. The queue remains open.",
-            ephemeral=True
-        )
-
-
 class LobbyView(discord.ui.View):
     """Persistent view for the lobby with join/leave buttons."""
 
@@ -149,12 +45,31 @@ class Matchmaking(commands.Cog):
         self.lobby_message: Optional[discord.Message] = None
         self.current_round: Optional[DebateRound] = None
         self.round_counter = 0
-        self.host_notification_1v1: Optional[discord.Message] = None
-        self.host_notification_ap: Optional[discord.Message] = None
+        self.active_rounds: dict[int, DebateRound] = {}
 
     def _get_queue(self, format_name: str) -> MatchmakingQueue:
         """Get the queue for a given format."""
         return self.queue_1v1 if format_name == "1v1" else self.queue_ap
+
+    def add_active_round(self, debate_round: DebateRound):
+        """Track an active round."""
+        self.active_rounds[debate_round.round_id] = debate_round
+
+    def remove_active_round(self, round_id: int):
+        """Remove a completed round."""
+        self.active_rounds.pop(round_id, None)
+
+    def requeue_participants(self, debate_round: DebateRound):
+        """Return all participants to their original queue."""
+        if not debate_round.format_label:
+            return
+        queue = self._get_queue(debate_round.format_label)
+        roles = debate_round.get_original_queue_roles()
+        for member, role in roles.items():
+            if role == "debater":
+                queue.add_debater(member)
+            else:
+                queue.add_judge(member)
 
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -204,82 +119,30 @@ class Matchmaking(commands.Cog):
             print(f"Error updating lobby display: {e}")
 
     async def check_matchmaking_threshold(self):
-        """Check if either queue has reached a matchmaking threshold."""
-        # Check 1v1 queue
-        threshold_1v1 = self.queue_1v1.get_threshold_type()
-        if threshold_1v1:
-            await self.send_host_notification(threshold_1v1, self.queue_1v1, "1v1")
-        else:
-            if self.host_notification_1v1:
-                try:
-                    await self.host_notification_1v1.delete()
-                except:
-                    pass
-                self.host_notification_1v1 = None
+        """Check if either queue has reached a matchmaking threshold and auto-start a round."""
+        if self.current_round:
+            return
 
-        # Check AP queue
-        threshold_ap = self.queue_ap.get_threshold_type()
-        if threshold_ap:
-            await self.send_host_notification(threshold_ap, self.queue_ap, "AP")
-        else:
-            if self.host_notification_ap:
-                try:
-                    await self.host_notification_ap.delete()
-                except:
-                    pass
-                self.host_notification_ap = None
+        for format_label, queue in [("1v1", self.queue_1v1), ("AP", self.queue_ap)]:
+            round_type = queue.get_threshold_type()
+            if round_type:
+                # Auto-create round with random allocation
+                debaters = list(queue.debaters)
+                judges = list(queue.judges)
+                debate_round = self.create_round_allocation(debaters, judges, round_type)
+                self.current_round = debate_round
+                debate_round.format_label = format_label
+                queue.clear()
+                await self.update_lobby_display()
 
-    async def send_host_notification(self, round_type: RoundType, queue: MatchmakingQueue, format_label: str):
-        """Send notification to host channel about ready queue."""
-        try:
-            host_channel = self.bot.get_channel(Config.HOST_CHANNEL_ID)
-            if not host_channel:
-                print(f"Warning: Host channel {Config.HOST_CHANNEL_ID} not found")
-                return
-
-            embed = EmbedBuilder.create_host_notification_embed(
-                queue.debater_count(),
-                queue.judge_count(),
-                round_type
-            )
-            view = HostControlView(
-                self,
-                round_type,
-                list(queue.debaters),
-                list(queue.judges),
-                format_label
-            )
-
-            # Delete old notification for this format
-            if format_label == "1v1":
-                old_msg = self.host_notification_1v1
-            else:
-                old_msg = self.host_notification_ap
-
-            if old_msg:
-                try:
-                    await old_msg.delete()
-                except:
-                    pass
-
-            # Ping host role if configured
-            content = None
-            if Config.HOST_ROLE_ID:
-                content = f"<@&{Config.HOST_ROLE_ID}>"
-
-            msg = await host_channel.send(
-                content=content,
-                embed=embed,
-                view=view
-            )
-
-            if format_label == "1v1":
-                self.host_notification_1v1 = msg
-            else:
-                self.host_notification_ap = msg
-
-        except Exception as e:
-            print(f"Error sending host notification: {e}")
+                # Send confirmation to lobby channel
+                rounds_cog = self.bot.get_cog("Rounds")
+                lobby_channel = self.bot.get_channel(Config.LOBBY_CHANNEL_ID)
+                if rounds_cog and lobby_channel:
+                    await rounds_cog.send_participant_confirmation(
+                        lobby_channel, debate_round, self
+                    )
+                break  # Only start one round at a time
 
     def create_round_allocation(self, debaters: list, judges: list, round_type: RoundType) -> DebateRound:
         """Create a debate round allocation from queued debaters and judges."""
@@ -353,14 +216,6 @@ class Matchmaking(commands.Cog):
             judges=judge_panel
         )
 
-    async def show_allocation_interface(self, channel, debate_round: DebateRound):
-        """Show the allocation interface with adjustment controls."""
-        from cogs.adjustment import AllocationAdjustmentView
-
-        embed = EmbedBuilder.create_allocation_embed(debate_round)
-        view = AllocationAdjustmentView(self, debate_round)
-        await channel.send(embed=embed, view=view)
-
     @discord.slash_command(
         name="queue",
         description="Join the matchmaking queue for a debate round",
@@ -407,7 +262,6 @@ class Matchmaking(commands.Cog):
                 )
             )
         else:
-            current_role = queue.get_user_role(ctx.author)
             await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(
                     f"Switched to {role.title()} in {format_display}",
@@ -460,7 +314,6 @@ class Matchmaking(commands.Cog):
         self.queue_1v1.clear()
         self.queue_ap.clear()
         await self.update_lobby_display()
-        await self.check_matchmaking_threshold()
         await ctx.respond(
             embed=EmbedBuilder.create_success_embed(
                 "Queue Cleared",

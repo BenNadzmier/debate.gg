@@ -122,6 +122,9 @@ class DebateRound:
     judges: JudgePanel
     motion: Optional[str] = None
     confirmed: bool = False
+    format_label: Optional[str] = None
+    category_id: Optional[int] = None
+    channel_ids: dict = field(default_factory=dict)
 
     def get_all_participants(self) -> List[discord.Member]:
         """Get all participants in the round."""
@@ -130,6 +133,17 @@ class DebateRound:
         participants.extend(self.opposition.members)
         participants.extend(self.judges.get_all_judges())
         return participants
+
+    def get_original_queue_roles(self) -> dict:
+        """Map each member to 'debater' or 'judge' for re-queuing on cancel."""
+        roles = {}
+        for member in self.government.members:
+            roles[member] = "debater"
+        for member in self.opposition.members:
+            roles[member] = "debater"
+        for judge in self.judges.get_all_judges():
+            roles[judge] = "judge"
+        return roles
 
     def swap_members(self, member1: discord.Member, member2: discord.Member) -> bool:
         """Swap positions of two members in the round."""

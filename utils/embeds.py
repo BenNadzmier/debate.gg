@@ -94,90 +94,6 @@ class EmbedBuilder:
         return ""
 
     @staticmethod
-    def create_host_notification_embed(debater_count: int, judge_count: int, round_type: RoundType) -> discord.Embed:
-        """Create notification embed for the host channel."""
-        total = debater_count + judge_count
-        embed = discord.Embed(
-            title="Matchmaking Ready!",
-            color=EmbedBuilder.COLOR_WARNING
-        )
-
-        if round_type == RoundType.PM_LO:
-            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **1v1 Round** (PM vs LO)!"
-            embed.add_field(
-                name="Configuration",
-                value=f"Government: 1 Debater (PM)\nOpposition: 1 Debater (LO)\nJudge: {judge_count}",
-                inline=False
-            )
-        elif round_type == RoundType.DOUBLE_IRON:
-            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Double Iron Round** (2v2)!"
-            embed.add_field(
-                name="Configuration",
-                value=f"Government: 2 Debaters (Iron)\nOpposition: 2 Debaters (Iron)\nJudges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
-                inline=False
-            )
-        elif round_type == RoundType.SINGLE_IRON:
-            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Single Iron Round**!"
-            embed.add_field(
-                name="Configuration",
-                value=f"One Full Team: 3 Debaters\nOne Iron Team: 2 Debaters\nJudges: {judge_count} (Chair" + (f" + {judge_count-1} Panelist(s)" if judge_count > 1 else "") + ")",
-                inline=False
-            )
-        elif round_type == RoundType.STANDARD:
-            embed.description = f"**{debater_count} debaters + {judge_count} judge(s)** ({total} total) ready for a **Standard Round**!"
-            config_text = f"Government: 3 Debaters\nOpposition: 3 Debaters\nJudges: {judge_count} (Chair"
-            if judge_count > 1:
-                config_text += f" + {judge_count-1} Panelist{'s' if judge_count > 2 else ''}"
-            config_text += ")"
-            embed.add_field(
-                name="Configuration",
-                value=config_text,
-                inline=False
-            )
-
-        embed.set_footer(text="Click a button below to start the round")
-        return embed
-
-    @staticmethod
-    def create_allocation_embed(debate_round: DebateRound) -> discord.Embed:
-        """Create the allocation embed showing team and judge assignments."""
-        embed = discord.Embed(
-            title="Round Allocation",
-            description="Review the allocations below. Use the controls to make adjustments.",
-            color=EmbedBuilder.COLOR_PRIMARY
-        )
-
-        # Government Team
-        gov_text = EmbedBuilder._format_team_text(debate_round.government)
-        embed.add_field(
-            name=f"Government Team ({debate_round.government.team_type.value.title()})",
-            value=gov_text,
-            inline=True
-        )
-
-        # Opposition Team
-        opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
-        embed.add_field(
-            name=f"Opposition Team ({debate_round.opposition.team_type.value.title()})",
-            value=opp_text,
-            inline=True
-        )
-
-        # Add spacer
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        # Judges
-        judge_text = EmbedBuilder._format_judge_text(debate_round.judges)
-        embed.add_field(
-            name="Judging Panel",
-            value=judge_text,
-            inline=False
-        )
-
-        embed.set_footer(text="Use the controls below to adjust allocations")
-        return embed
-
-    @staticmethod
     def _format_team_text(team) -> str:
         """Format team member text with positions."""
         if not team.members:
@@ -205,54 +121,6 @@ class EmbedBuilder:
                 lines.append(f"**Panelist {i+1}**\n{panelist.mention}")
 
         return "\n\n".join(lines)
-
-    @staticmethod
-    def create_confirmed_round_embed(debate_round: DebateRound, motion: str) -> discord.Embed:
-        """Create the final confirmed round embed."""
-        embed = discord.Embed(
-            title="Debate Round Starting!",
-            description=f"**Motion**: {motion}",
-            color=EmbedBuilder.COLOR_SUCCESS
-        )
-
-        # Government Team
-        gov_text = EmbedBuilder._format_team_text(debate_round.government)
-        embed.add_field(
-            name="Government Team",
-            value=gov_text,
-            inline=True
-        )
-
-        # Opposition Team
-        opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
-        embed.add_field(
-            name="Opposition Team",
-            value=opp_text,
-            inline=True
-        )
-
-        # Add spacer
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        # Judges
-        judge_text = EmbedBuilder._format_judge_text(debate_round.judges)
-        embed.add_field(
-            name="Judging Panel",
-            value=judge_text,
-            inline=False
-        )
-
-        # Mention all participants
-        all_participants = debate_round.get_all_participants()
-        participant_mentions = " ".join([p.mention for p in all_participants])
-        embed.add_field(
-            name="Participants",
-            value=participant_mentions,
-            inline=False
-        )
-
-        embed.set_footer(text="Good luck to all debaters!")
-        return embed
 
     @staticmethod
     def create_guide_embed() -> discord.Embed:
@@ -301,15 +169,190 @@ class EmbedBuilder:
         embed.add_field(
             name="What Happens Next",
             value=(
-                "When enough players queue, a host is notified to start the round. "
-                "The host can review and adjust allocations before confirming. "
-                "Once a motion is set, the round begins!"
+                "When enough players queue, the bot automatically creates a round "
+                "with random team allocations. All participants must confirm, then "
+                "the chair judge enters the motion and starts prep time. "
+                "After prep, debaters are moved to the debate channel automatically."
             ),
             inline=False
         )
 
         embed.set_footer(text="Use /queue to get started!")
         return embed
+
+    @staticmethod
+    def create_participant_confirmation_embed(debate_round, confirmed_ids: set) -> discord.Embed:
+        """Create embed for participant confirmation with allocation and status checkmarks."""
+        all_participants = debate_round.get_all_participants()
+        embed = discord.Embed(
+            title="Round Confirmation Required",
+            description=(
+                "A match has been found! All participants must confirm their availability.\n"
+                "Click **Confirm** to accept or **Decline** to cancel."
+            ),
+            color=EmbedBuilder.COLOR_WARNING
+        )
+
+        # Show team allocation
+        gov_text = EmbedBuilder._format_team_text(debate_round.government)
+        embed.add_field(
+            name=f"Government ({debate_round.government.team_type.value.title()})",
+            value=gov_text,
+            inline=True
+        )
+
+        opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
+        embed.add_field(
+            name=f"Opposition ({debate_round.opposition.team_type.value.title()})",
+            value=opp_text,
+            inline=True
+        )
+
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        judge_text = EmbedBuilder._format_judge_text(debate_round.judges)
+        embed.add_field(
+            name="Judging Panel",
+            value=judge_text,
+            inline=False
+        )
+
+        # Confirmation status
+        status_lines = []
+        for p in all_participants:
+            icon = "\u2705" if p.id in confirmed_ids else "\u23f3"
+            status_lines.append(f"{icon} {p.mention}")
+
+        embed.add_field(
+            name=f"Confirmation ({len(confirmed_ids)}/{len(all_participants)})",
+            value="\n".join(status_lines),
+            inline=False
+        )
+
+        embed.set_footer(text="This confirmation will expire in 90 seconds.")
+        return embed
+
+    @staticmethod
+    def create_round_cancelled_embed(reason: str) -> discord.Embed:
+        """Create embed shown when a round is cancelled."""
+        return discord.Embed(
+            title="Round Cancelled",
+            description=f"{reason}\nAll participants have been returned to the queue.",
+            color=EmbedBuilder.COLOR_DANGER
+        )
+
+    @staticmethod
+    def create_round_text_channel_embed(debate_round) -> discord.Embed:
+        """Create the initial embed posted in the round's text channel."""
+        embed = discord.Embed(
+            title=f"Round {debate_round.round_id}",
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+
+        if debate_round.motion:
+            embed.description = f"**Motion:** {debate_round.motion}"
+        else:
+            embed.description = "*Waiting for chair judge to enter the motion...*"
+
+        gov_text = EmbedBuilder._format_team_text(debate_round.government)
+        embed.add_field(
+            name=f"Government ({debate_round.government.team_type.value.title()})",
+            value=gov_text,
+            inline=True
+        )
+
+        opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
+        embed.add_field(
+            name=f"Opposition ({debate_round.opposition.team_type.value.title()})",
+            value=opp_text,
+            inline=True
+        )
+
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        judge_text = EmbedBuilder._format_judge_text(debate_round.judges)
+        embed.add_field(
+            name="Judging Panel",
+            value=judge_text,
+            inline=False
+        )
+
+        if debate_round.motion:
+            embed.set_footer(text="When the round is over, a judge can click 'Mark Round Complete' below.")
+        else:
+            embed.set_footer(text="Chair judge: use the controls below to set the motion and start prep.")
+        return embed
+
+    @staticmethod
+    def create_chair_control_embed(debate_round) -> discord.Embed:
+        """Create embed for the chair judge control panel."""
+        if not debate_round.motion:
+            return discord.Embed(
+                title="Chair Judge Controls",
+                description=(
+                    f"**Chair:** {debate_round.judges.chair.mention}\n\n"
+                    "Enter the debate motion to get started."
+                ),
+                color=EmbedBuilder.COLOR_PRIMARY
+            )
+        else:
+            return discord.Embed(
+                title="Chair Judge Controls",
+                description=(
+                    f"**Chair:** {debate_round.judges.chair.mention}\n"
+                    f"**Motion:** {debate_round.motion}\n\n"
+                    "Start prep time when all participants are ready."
+                ),
+                color=EmbedBuilder.COLOR_PRIMARY
+            )
+
+    @staticmethod
+    def create_prep_started_embed(debate_round, end_timestamp: int) -> discord.Embed:
+        """Create embed shown when prep time starts."""
+        prep_minutes = 15 if debate_round.round_type == RoundType.PM_LO else 30
+        embed = discord.Embed(
+            title="Prep Time Started!",
+            description=(
+                f"**Motion:** {debate_round.motion}\n\n"
+                f"You have **{prep_minutes} minutes** to prepare.\n"
+                f"Prep ends <t:{end_timestamp}:R> (<t:{end_timestamp}:T>)\n\n"
+                "Move to your prep channels now!"
+            ),
+            color=EmbedBuilder.COLOR_WARNING
+        )
+        embed.add_field(
+            name="Government",
+            value="Join the **gov-prep** voice channel",
+            inline=True
+        )
+        embed.add_field(
+            name="Opposition",
+            value="Join the **opp-prep** voice channel",
+            inline=True
+        )
+        return embed
+
+    @staticmethod
+    def create_debate_started_embed(debate_round) -> discord.Embed:
+        """Create embed shown when prep ends and debate begins."""
+        return discord.Embed(
+            title="Debate Has Begun!",
+            description=(
+                f"**Motion:** {debate_round.motion}\n\n"
+                "Prep time is over. All debaters have been moved to the debate voice channel.\n"
+                "Good luck to both sides!"
+            ),
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+
+    @staticmethod
+    def create_round_complete_embed(round_id: int) -> discord.Embed:
+        """Create embed shown when a round completes."""
+        return discord.Embed(
+            title="Round Complete",
+            description=f"Round {round_id} has been marked as complete. Channels have been deleted.",
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
 
     @staticmethod
     def create_error_embed(title: str, message: str) -> discord.Embed:

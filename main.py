@@ -29,7 +29,7 @@ class DebateBot(discord.Bot):
 
         self.initial_extensions = [
             'cogs.matchmaking',
-            'cogs.adjustment'
+            'cogs.rounds'
         ]
 
         self.cogs_loaded = False
@@ -139,8 +139,6 @@ def main():
         logger.info("✓ Configuration valid")
         logger.info(f"  - Guild ID: {Config.GUILD_ID}")
         logger.info(f"  - Lobby Channel: {Config.LOBBY_CHANNEL_ID}")
-        logger.info(f"  - Host Channel: {Config.HOST_CHANNEL_ID}")
-        logger.info(f"  - Host Role: {Config.HOST_ROLE_ID if Config.HOST_ROLE_ID else 'Not set (optional)'}")
     except ValueError as e:
         logger.error(f"Configuration Error: {e}")
         logger.error("Please check your .env file and ensure all required values are set.")
