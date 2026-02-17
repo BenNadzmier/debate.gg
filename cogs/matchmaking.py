@@ -556,14 +556,11 @@ class Matchmaking(commands.Cog):
         description="Invite a user to your debate party (AP format)",
         default_member_permissions=None
     )
+    @discord.option("user", description="The user to invite to your party", required=True)
     async def invite_command(
         self,
         ctx: discord.ApplicationContext,
-        user: discord.Member = discord.Option(
-            input_type=discord.Member,
-            description="The user to invite to your party",
-            required=True
-        )
+        user: discord.Member,
     ):
         """Invite a user to your party."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /invite for {user}")
