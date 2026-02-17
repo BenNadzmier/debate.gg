@@ -297,8 +297,37 @@ class ChairJudgeControlView(discord.ui.View):
         prep_embed = EmbedBuilder.create_prep_started_embed(self.debate_round, end_timestamp)
         await text_channel.send(embed=prep_embed)
 
-        # Start background prep timer
+        # Auto-move participants to their prep/judge VCs
         guild = interaction.guild
+        gov_prep_vc = guild.get_channel(self.debate_round.channel_ids["gov_prep"])
+        opp_prep_vc = guild.get_channel(self.debate_round.channel_ids["opp_prep"])
+        judges_vc = guild.get_channel(self.debate_round.channel_ids["judges"])
+
+        for member in self.debate_round.government.members:
+            try:
+                if member.voice:
+                    await member.move_to(gov_prep_vc)
+            except Exception:
+                pass
+
+        for member in self.debate_round.opposition.members:
+            try:
+                if member.voice:
+                    await member.move_to(opp_prep_vc)
+            except Exception:
+                pass
+
+        for member in self.debate_round.judges.get_all_judges():
+            try:
+                if member.voice:
+                    await member.move_to(judges_vc)
+            except Exception:
+                pass
+
+        # DM debaters with motion, side, and prep end time
+        await self.rounds_cog.send_prep_dms(self.debate_round, end_timestamp)
+
+        # Start background prep timer
         task = self.rounds_cog.bot.loop.create_task(
             self.rounds_cog.run_prep_timer(guild, self.debate_round, text_channel, duration)
         )
@@ -474,6 +503,26 @@ class Rounds(commands.Cog):
                 )
         except Exception as e:
             logger.error(f"Error creating round channels: {e}", exc_info=True)
+
+    async def send_prep_dms(self, debate_round: DebateRound, end_timestamp: int):
+        """DM each debater with their side, the motion, and prep end time."""
+        for member in debate_round.government.members:
+            try:
+                embed = EmbedBuilder.create_prep_dm_embed(
+                    debate_round, "Government", end_timestamp
+                )
+                await member.send(embed=embed)
+            except discord.Forbidden:
+                pass  # DMs disabled
+
+        for member in debate_round.opposition.members:
+            try:
+                embed = EmbedBuilder.create_prep_dm_embed(
+                    debate_round, "Opposition", end_timestamp
+                )
+                await member.send(embed=embed)
+            except discord.Forbidden:
+                pass  # DMs disabled
 
     async def run_prep_timer(self, guild: discord.Guild, debate_round: DebateRound, text_channel: discord.TextChannel, duration: int):
         """Run the prep timer and auto-move debaters when done."""

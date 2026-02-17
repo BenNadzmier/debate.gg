@@ -346,6 +346,21 @@ class EmbedBuilder:
         )
 
     @staticmethod
+    def create_prep_dm_embed(debate_round, side: str, end_timestamp: int) -> discord.Embed:
+        """Create a DM embed sent to debaters when prep starts."""
+        prep_minutes = 15 if debate_round.round_type == RoundType.PM_LO else 30
+        return discord.Embed(
+            title=f"Round {debate_round.round_id} — Prep Time",
+            description=(
+                f"**Side:** {side}\n"
+                f"**Motion:** {debate_round.motion}\n\n"
+                f"You have **{prep_minutes} minutes** to prepare.\n"
+                f"Prep ends <t:{end_timestamp}:R> (<t:{end_timestamp}:T>)"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
     def create_round_complete_embed(round_id: int) -> discord.Embed:
         """Create embed shown when a round completes."""
         return discord.Embed(
