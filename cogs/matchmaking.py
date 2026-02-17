@@ -560,6 +560,7 @@ class Matchmaking(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         user: discord.Member = discord.Option(
+            input_type=discord.Member,
             description="The user to invite to your party",
             required=True
         )
