@@ -26,6 +26,35 @@ class FormatType(Enum):
 
 
 @dataclass
+class Party:
+    """Represents a party of debaters who want to be on the same team."""
+    host: discord.Member
+    members: List[discord.Member] = field(default_factory=list)  # includes host, max 3
+
+    def __post_init__(self):
+        if self.host not in self.members:
+            self.members.insert(0, self.host)
+
+    def add_member(self, member: discord.Member) -> bool:
+        """Add a member to the party. Returns False if full or already in party."""
+        if len(self.members) >= 3 or member in self.members:
+            return False
+        self.members.append(member)
+        return True
+
+    def remove_member(self, member: discord.Member) -> bool:
+        """Remove a non-host member from the party."""
+        if member in self.members and member != self.host:
+            self.members.remove(member)
+            return True
+        return False
+
+    @property
+    def size(self) -> int:
+        return len(self.members)
+
+
+@dataclass
 class DebateTeam:
     """Represents a debate team (Gov or Opp)."""
     team_name: str  # "Government" or "Opposition"
@@ -272,8 +301,13 @@ class MatchmakingQueue:
         """Get the number of judges in queue."""
         return len(self.judges)
 
-    def get_threshold_type(self) -> Optional[RoundType]:
-        """Determine the round type based on current queue composition."""
+    def get_threshold_type(self, max_party_size: int = 1) -> Optional[RoundType]:
+        """Determine the round type based on current queue composition.
+
+        Args:
+            max_party_size: Size of the largest party in queue. A party of 3
+                cannot fit in a double iron (2v2) round, so we skip it.
+        """
         debaters = self.debater_count()
         judges = self.judge_count()
 
@@ -283,14 +317,14 @@ class MatchmakingQueue:
                 return RoundType.PM_LO
             return None
         else:
-            # AP format
-            # DOUBLE_IRON: 4 debaters + 1 judge (2v2)
-            if debaters == 4 and judges >= 1:
-                return RoundType.DOUBLE_IRON
-            # SINGLE_IRON: 5 debaters + 1 judge (3v2 or 2v3)
-            elif debaters == 5 and judges >= 1:
-                return RoundType.SINGLE_IRON
+            # AP format — check from largest round type down
             # STANDARD: 6+ debaters + 1+ judges (3v3)
-            elif debaters >= 6 and judges >= 1:
+            if debaters >= 6 and judges >= 1:
                 return RoundType.STANDARD
+            # SINGLE_IRON: 5 debaters + 1 judge (3v2 or 2v3)
+            if debaters >= 5 and judges >= 1:
+                return RoundType.SINGLE_IRON
+            # DOUBLE_IRON: 4 debaters + 1 judge (2v2) — only if no party > 2
+            if debaters >= 4 and judges >= 1 and max_party_size <= 2:
+                return RoundType.DOUBLE_IRON
             return None

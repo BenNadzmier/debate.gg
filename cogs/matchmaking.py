@@ -9,9 +9,78 @@ from config import Config
 logger = logging.getLogger('DebateBot.Matchmaking')
 from utils.models import (
     MatchmakingQueue, DebateRound, DebateTeam, JudgePanel,
-    TeamType, RoundType, FormatType
+    TeamType, RoundType, FormatType, Party
 )
 from utils.embeds import EmbedBuilder
+
+
+class PartyInviteView(discord.ui.View):
+    """View sent in DMs for accepting/declining party invites."""
+
+    def __init__(self, cog, host: discord.Member, invited_user: discord.Member):
+        super().__init__(timeout=300)  # 5 min timeout
+        self.cog = cog
+        self.host = host
+        self.invited_user = invited_user
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
+    async def accept_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        """Accept the party invitation."""
+        # Check if user is already in a party
+        if self.invited_user.id in self.cog.member_to_party:
+            await interaction.response.edit_message(
+                content="You're already in a party. Use `/leaveparty` first.",
+                embed=None, view=None
+            )
+            return
+
+        # Check if host's party still exists
+        party = self.cog.parties.get(self.host.id)
+        if not party:
+            await interaction.response.edit_message(
+                content="This party no longer exists.",
+                embed=None, view=None
+            )
+            return
+
+        # Check if party is full
+        if not party.add_member(self.invited_user):
+            await interaction.response.edit_message(
+                content="The party is already full (3/3).",
+                embed=None, view=None
+            )
+            return
+
+        # Track membership
+        self.cog.member_to_party[self.invited_user.id] = self.host.id
+
+        # Disable buttons
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(
+            content=f"You've joined **{self.host.display_name}**'s party!",
+            embed=None, view=self
+        )
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
+    async def decline_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        """Decline the party invitation."""
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content="You declined the party invitation.",
+            embed=None, view=self
+        )
 
 
 class LobbyView(discord.ui.View):
@@ -46,10 +115,29 @@ class Matchmaking(commands.Cog):
         self.current_round: Optional[DebateRound] = None
         self.round_counter = 0
         self.active_rounds: dict[int, DebateRound] = {}
+        # Party system
+        self.parties: dict[int, Party] = {}        # host_id -> Party
+        self.member_to_party: dict[int, int] = {}  # member_id -> host_id
 
     def _get_queue(self, format_name: str) -> MatchmakingQueue:
         """Get the queue for a given format."""
         return self.queue_1v1 if format_name == "1v1" else self.queue_ap
+
+    def _get_max_party_size(self, queue: MatchmakingQueue) -> int:
+        """Get the size of the largest party among queued debaters."""
+        max_size = 1
+        for debater in queue.debaters:
+            host_id = self.member_to_party.get(debater.id)
+            if host_id and host_id in self.parties:
+                max_size = max(max_size, self.parties[host_id].size)
+        return max_size
+
+    def _disband_party(self, host_id: int):
+        """Disband a party and clean up all references."""
+        party = self.parties.pop(host_id, None)
+        if party:
+            for member in party.members:
+                self.member_to_party.pop(member.id, None)
 
     def add_active_round(self, debate_round: DebateRound):
         """Track an active round."""
@@ -74,7 +162,7 @@ class Matchmaking(commands.Cog):
     async def cog_load(self):
         """Called when the cog is loaded."""
         logger.info("Matchmaking cog loaded")
-        logger.info("Registering slash commands: /queue, /leave, /clearqueue, /guide")
+        logger.info("Registering slash commands: /queue, /leave, /clearqueue, /guide, /invite, /party, /leaveparty")
         await self.initialize_lobby()
 
     async def initialize_lobby(self):
@@ -124,7 +212,8 @@ class Matchmaking(commands.Cog):
             return
 
         for format_label, queue in [("1v1", self.queue_1v1), ("AP", self.queue_ap)]:
-            round_type = queue.get_threshold_type()
+            max_party_size = self._get_max_party_size(queue) if format_label == "AP" else 1
+            round_type = queue.get_threshold_type(max_party_size)
             if round_type:
                 # Auto-create round with random allocation
                 debaters = list(queue.debaters)
@@ -144,69 +233,103 @@ class Matchmaking(commands.Cog):
                     )
                 break  # Only start one round at a time
 
+    def _build_allocation_units(self, debaters: list) -> list:
+        """Group debaters into allocation units. Party members stay together."""
+        units = []
+        assigned = set()
+
+        for debater in debaters:
+            if debater.id in assigned:
+                continue
+            host_id = self.member_to_party.get(debater.id)
+            if host_id and host_id in self.parties:
+                party = self.parties[host_id]
+                party_unit = [m for m in party.members if m in debaters and m.id not in assigned]
+                for m in party_unit:
+                    assigned.add(m.id)
+                if party_unit:
+                    units.append(party_unit)
+            else:
+                assigned.add(debater.id)
+                units.append([debater])
+        return units
+
     def create_round_allocation(self, debaters: list, judges: list, round_type: RoundType) -> DebateRound:
         """Create a debate round allocation from queued debaters and judges."""
         self.round_counter += 1
 
-        # Shuffle debaters and judges separately for random allocation
-        shuffled_debaters = debaters.copy()
+        # Shuffle judges for random chair assignment
         shuffled_judges = judges.copy()
-        random.shuffle(shuffled_debaters)
         random.shuffle(shuffled_judges)
 
         # Initialize judge panel
         judge_panel = JudgePanel()
+        for judge in shuffled_judges:
+            judge_panel.add_judge(judge)
 
-        # Allocate teams based on round type
         if round_type == RoundType.PM_LO:
-            # 1v1: 1 debater per side, 1+ judges
+            # 1v1: no parties, simple shuffle
+            shuffled_debaters = debaters.copy()
+            random.shuffle(shuffled_debaters)
+
             gov_team = DebateTeam("Government", TeamType.SOLO)
             opp_team = DebateTeam("Opposition", TeamType.SOLO)
-
             gov_team.members = [shuffled_debaters[0]]
             opp_team.members = [shuffled_debaters[1]]
 
-            for judge in shuffled_judges:
-                judge_panel.add_judge(judge)
-
         elif round_type == RoundType.DOUBLE_IRON:
-            # 4 debaters: 2v2, 1+ judges
+            # 2v2: party-aware allocation
+            units = self._build_allocation_units(debaters)
+            random.shuffle(units)
+
+            gov_members, opp_members = [], []
+            for unit in units:
+                if len(gov_members) + len(unit) <= 2:
+                    gov_members.extend(unit)
+                elif len(opp_members) + len(unit) <= 2:
+                    opp_members.extend(unit)
+
             gov_team = DebateTeam("Government", TeamType.IRON)
             opp_team = DebateTeam("Opposition", TeamType.IRON)
-
-            gov_team.members = shuffled_debaters[0:2]
-            opp_team.members = shuffled_debaters[2:4]
-
-            for judge in shuffled_judges:
-                judge_panel.add_judge(judge)
+            gov_team.members = gov_members
+            opp_team.members = opp_members
 
         elif round_type == RoundType.SINGLE_IRON:
-            # 5 debaters: One full team (3), one iron team (2), 1+ judges
+            # 3v2 or 2v3: party-aware allocation
             gov_is_iron = random.choice([True, False])
+            gov_size = 2 if gov_is_iron else 3
+            opp_size = 3 if gov_is_iron else 2
+
+            units = self._build_allocation_units(debaters)
+            random.shuffle(units)
+
+            gov_members, opp_members = [], []
+            for unit in units:
+                if len(gov_members) + len(unit) <= gov_size:
+                    gov_members.extend(unit)
+                elif len(opp_members) + len(unit) <= opp_size:
+                    opp_members.extend(unit)
 
             gov_team = DebateTeam("Government", TeamType.IRON if gov_is_iron else TeamType.FULL)
             opp_team = DebateTeam("Opposition", TeamType.FULL if gov_is_iron else TeamType.IRON)
+            gov_team.members = gov_members
+            opp_team.members = opp_members
 
-            if gov_is_iron:
-                gov_team.members = shuffled_debaters[0:2]
-                opp_team.members = shuffled_debaters[2:5]
-            else:
-                gov_team.members = shuffled_debaters[0:3]
-                opp_team.members = shuffled_debaters[3:5]
+        else:  # STANDARD (3v3)
+            units = self._build_allocation_units(debaters)
+            random.shuffle(units)
 
-            for judge in shuffled_judges:
-                judge_panel.add_judge(judge)
+            gov_members, opp_members = [], []
+            for unit in units:
+                if len(gov_members) + len(unit) <= 3:
+                    gov_members.extend(unit)
+                elif len(opp_members) + len(unit) <= 3:
+                    opp_members.extend(unit)
 
-        else:  # STANDARD
-            # 6+ debaters: 3v3, 1+ judges
             gov_team = DebateTeam("Government", TeamType.FULL)
             opp_team = DebateTeam("Opposition", TeamType.FULL)
-
-            gov_team.members = shuffled_debaters[0:3]
-            opp_team.members = shuffled_debaters[3:6]
-
-            for judge in shuffled_judges:
-                judge_panel.add_judge(judge)
+            gov_team.members = gov_members
+            opp_team.members = opp_members
 
         return DebateRound(
             round_id=self.round_counter,
@@ -215,6 +338,8 @@ class Matchmaking(commands.Cog):
             opposition=opp_team,
             judges=judge_panel
         )
+
+    # ─── Slash Commands ────────────────────────────────────────────
 
     @discord.slash_command(
         name="queue",
@@ -239,6 +364,60 @@ class Matchmaking(commands.Cog):
         """Join the matchmaking queue as debater or judge for a specific format."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /queue as {role} for {debate_format}")
 
+        # Party checks
+        party_host_id = self.member_to_party.get(ctx.author.id)
+        if party_host_id:
+            party = self.parties.get(party_host_id)
+            if party:
+                # Non-host party members can't queue individually
+                if ctx.author.id != party_host_id:
+                    await ctx.respond(
+                        embed=EmbedBuilder.create_error_embed(
+                            "In a Party",
+                            "You're in a party. Ask your party host to queue, or use `/leaveparty` first."
+                        )
+                    )
+                    return
+
+                # Party host: enforce AP debater only
+                if debate_format == "1v1":
+                    await ctx.respond(
+                        embed=EmbedBuilder.create_error_embed(
+                            "Party Not Supported",
+                            "Parties are only supported in AP format. Use `/leaveparty` to disband first."
+                        )
+                    )
+                    return
+
+                if role == "judge":
+                    await ctx.respond(
+                        embed=EmbedBuilder.create_error_embed(
+                            "Party Host",
+                            "As a party host, you can only queue as a debater. Use `/leaveparty` to disband first."
+                        )
+                    )
+                    return
+
+                # Queue all party members as debaters in AP
+                queue = self.queue_ap
+                other_queue = self.queue_1v1
+
+                for member in party.members:
+                    other_queue.remove_user(member)
+                    queue.add_debater(member)
+
+                await ctx.respond(
+                    embed=EmbedBuilder.create_success_embed(
+                        f"Party Joined AP Queue",
+                        f"You and your party ({party.size} members) have joined the AP debater queue.\n"
+                        f"**Debaters:** {queue.debater_count()} | **Judges:** {queue.judge_count()}"
+                    )
+                )
+                await self.update_lobby_display()
+                await self.check_matchmaking_threshold()
+                return
+
+        # Standard (non-party) queue flow
         queue = self._get_queue(debate_format)
         other_queue = self.queue_ap if debate_format == "1v1" else self.queue_1v1
 
@@ -281,6 +460,44 @@ class Matchmaking(commands.Cog):
     async def leave_command(self, ctx: discord.ApplicationContext):
         """Leave the matchmaking queue."""
         logger.info(f"User {ctx.author} ({ctx.author.id}) used /leave command")
+
+        # If party host, remove all party members from queue
+        party_host_id = self.member_to_party.get(ctx.author.id)
+        if party_host_id and ctx.author.id == party_host_id:
+            party = self.parties.get(party_host_id)
+            if party:
+                removed = False
+                for member in party.members:
+                    if self.queue_1v1.remove_user(member):
+                        removed = True
+                    if self.queue_ap.remove_user(member):
+                        removed = True
+                if removed:
+                    await ctx.respond(
+                        embed=EmbedBuilder.create_success_embed(
+                            "Party Left Queue",
+                            "Your party has been removed from the queue."
+                        ),
+                        ephemeral=False
+                    )
+                    await self.update_lobby_display()
+                    await self.check_matchmaking_threshold()
+                else:
+                    await ctx.respond(
+                        embed=EmbedBuilder.create_error_embed(
+                            "Not in Queue",
+                            "Your party is not in the matchmaking queue."
+                        ),
+                        ephemeral=False
+                    )
+                return
+
+        # If party member (not host), leave queue + leave party
+        if party_host_id:
+            party = self.parties.get(party_host_id)
+            if party:
+                party.remove_member(ctx.author)
+                self.member_to_party.pop(ctx.author.id, None)
 
         removed_1v1 = self.queue_1v1.remove_user(ctx.author)
         removed_ap = self.queue_ap.remove_user(ctx.author)
@@ -331,6 +548,176 @@ class Matchmaking(commands.Cog):
         """Show the guide for how the bot works."""
         embed = EmbedBuilder.create_guide_embed()
         await ctx.respond(embed=embed)
+
+    # ─── Party Commands ────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="invite",
+        description="Invite a user to your debate party (AP format)",
+        default_member_permissions=None
+    )
+    async def invite_command(
+        self,
+        ctx: discord.ApplicationContext,
+        user: discord.Member = discord.Option(
+            description="The user to invite to your party",
+            required=True
+        )
+    ):
+        """Invite a user to your party."""
+        logger.info(f"User {ctx.author} ({ctx.author.id}) used /invite for {user}")
+
+        # Can't invite yourself
+        if user.id == ctx.author.id:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed("Invalid Invite", "You can't invite yourself."),
+                ephemeral=True
+            )
+            return
+
+        # Can't invite bots
+        if user.bot:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed("Invalid Invite", "You can't invite a bot."),
+                ephemeral=True
+            )
+            return
+
+        # Check if inviter is a non-host party member
+        existing_host_id = self.member_to_party.get(ctx.author.id)
+        if existing_host_id and existing_host_id != ctx.author.id:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "Not Party Host",
+                    "Only the party host can invite members. Use `/leaveparty` to leave your current party first."
+                ),
+                ephemeral=True
+            )
+            return
+
+        # Check if invited user is already in a party
+        if user.id in self.member_to_party:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "Already in a Party",
+                    f"{user.mention} is already in a party. They must `/leaveparty` first."
+                ),
+                ephemeral=True
+            )
+            return
+
+        # Create party if host doesn't have one
+        if ctx.author.id not in self.parties:
+            party = Party(host=ctx.author)
+            self.parties[ctx.author.id] = party
+            self.member_to_party[ctx.author.id] = ctx.author.id
+        else:
+            party = self.parties[ctx.author.id]
+
+        # Check party size
+        if party.size >= 3:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "Party Full",
+                    "Your party is already full (3/3)."
+                ),
+                ephemeral=True
+            )
+            return
+
+        # Send DM to invited user
+        try:
+            embed = EmbedBuilder.create_party_invite_embed(ctx.author, party.members)
+            view = PartyInviteView(self, ctx.author, user)
+            view.message = await user.send(embed=embed, view=view)
+
+            await ctx.respond(
+                embed=EmbedBuilder.create_success_embed(
+                    "Invite Sent",
+                    f"Invitation sent to {user.mention}. They'll receive a DM to accept or decline."
+                )
+            )
+        except discord.Forbidden:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "Cannot Send DM",
+                    f"{user.mention} has DMs disabled. They need to enable DMs from server members."
+                ),
+                ephemeral=True
+            )
+
+    @discord.slash_command(
+        name="party",
+        description="View your current party",
+        default_member_permissions=None
+    )
+    async def party_command(self, ctx: discord.ApplicationContext):
+        """View current party status."""
+        host_id = self.member_to_party.get(ctx.author.id)
+        if not host_id or host_id not in self.parties:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "No Party",
+                    "You're not in a party. Use `/invite @user` to create one."
+                ),
+                ephemeral=True
+            )
+            return
+
+        party = self.parties[host_id]
+        in_queue = any(m in self.queue_ap.debaters for m in party.members)
+        embed = EmbedBuilder.create_party_status_embed(party, in_queue)
+        await ctx.respond(embed=embed)
+
+    @discord.slash_command(
+        name="leaveparty",
+        description="Leave your current party (host: disbands party)",
+        default_member_permissions=None
+    )
+    async def leaveparty_command(self, ctx: discord.ApplicationContext):
+        """Leave or disband a party."""
+        host_id = self.member_to_party.get(ctx.author.id)
+        if not host_id or host_id not in self.parties:
+            await ctx.respond(
+                embed=EmbedBuilder.create_error_embed(
+                    "No Party",
+                    "You're not in a party."
+                ),
+                ephemeral=True
+            )
+            return
+
+        party = self.parties[host_id]
+
+        if ctx.author.id == host_id:
+            # Host disbands: remove all members from queue + party
+            for member in party.members:
+                self.queue_1v1.remove_user(member)
+                self.queue_ap.remove_user(member)
+            self._disband_party(host_id)
+
+            await ctx.respond(
+                embed=EmbedBuilder.create_success_embed(
+                    "Party Disbanded",
+                    "Your party has been disbanded and all members removed from queue."
+                )
+            )
+        else:
+            # Member leaves: remove from party + queue
+            party.remove_member(ctx.author)
+            self.member_to_party.pop(ctx.author.id, None)
+            self.queue_1v1.remove_user(ctx.author)
+            self.queue_ap.remove_user(ctx.author)
+
+            await ctx.respond(
+                embed=EmbedBuilder.create_success_embed(
+                    "Left Party",
+                    "You've left the party and have been removed from the queue."
+                )
+            )
+
+        await self.update_lobby_display()
+        await self.check_matchmaking_threshold()
 
 
 def setup(bot):

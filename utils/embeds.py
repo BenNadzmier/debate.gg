@@ -370,6 +370,39 @@ class EmbedBuilder:
         )
 
     @staticmethod
+    def create_party_invite_embed(host: discord.Member, party_members: list) -> discord.Embed:
+        """Create DM embed for a party invitation."""
+        members_text = "\n".join(f"- {m.display_name}" for m in party_members)
+        return discord.Embed(
+            title="Party Invitation",
+            description=(
+                f"**{host.display_name}** has invited you to join their debate party!\n\n"
+                f"**Current Members:**\n{members_text}\n\n"
+                "Click **Accept** to join or **Decline** to reject."
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
+    def create_party_status_embed(party, in_queue: bool) -> discord.Embed:
+        """Create embed showing party status."""
+        members_text = "\n".join(
+            f"{'**[Host]** ' if m == party.host else ''}{m.mention}"
+            for m in party.members
+        )
+        status = "In Queue" if in_queue else "Not Queued"
+        return discord.Embed(
+            title="Your Party",
+            description=(
+                f"**Members ({party.size}/3):**\n{members_text}\n\n"
+                f"**Status:** {status}\n\n"
+                "Use `/invite @user` to add members.\n"
+                "Use `/leaveparty` to leave."
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
     def create_error_embed(title: str, message: str) -> discord.Embed:
         """Create an error embed."""
         embed = discord.Embed(
