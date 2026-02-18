@@ -29,7 +29,8 @@ class DebateBot(discord.Bot):
 
         self.initial_extensions = [
             'cogs.matchmaking',
-            'cogs.rounds'
+            'cogs.rounds',
+            'cogs.welcome'
         ]
 
         self.cogs_loaded = False

@@ -522,3 +522,53 @@ class EmbedBuilder:
             color=EmbedBuilder.COLOR_SUCCESS
         )
         return embed
+
+    @staticmethod
+    def create_welcome_dm_embed(guild_name: str) -> discord.Embed:
+        """Create a welcome DM embed for new server members."""
+        embed = discord.Embed(
+            title=f"Welcome to {guild_name}!",
+            description=(
+                "This server uses a debate matchmaking bot to organize rounds. "
+                "Queue up, get matched, and debate!"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        embed.add_field(
+            name="How It Works",
+            value=(
+                "1. Join a queue as a **debater** or **judge**\n"
+                "2. Once enough players queue, a round is created\n"
+                "3. All participants confirm, then channels are set up\n"
+                "4. The chair judge enters the motion and starts prep time\n"
+                "5. After prep, debate in the voice channel\n"
+                "6. The judge submits the ballot with scores and results"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Formats",
+            value=(
+                "**1v1** — PM vs LO with 1 judge\n"
+                "**AP (Asian Parliamentary)** — 3v3, 2v2, or mixed teams with judges"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Commands",
+            value=(
+                "`/queue` — Join a debate queue\n"
+                "`/leave` — Leave the queue\n"
+                "`/invite @user` — Invite someone to your party (AP)\n"
+                "`/party` — View your current party\n"
+                "`/leaveparty` — Leave your party\n"
+                "`/guide` — Full guide with details"
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="DMs must be enabled to receive round notifications.")
+        return embed
