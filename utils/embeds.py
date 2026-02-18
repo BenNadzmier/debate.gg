@@ -1,6 +1,6 @@
 import discord
 from typing import List
-from utils.models import DebateRound, MatchmakingQueue, RoundType, TeamType, FormatType
+from utils.models import DebateRound, MatchmakingQueue, RoundType, TeamType, FormatType, Ballot, JudgeRating
 
 
 class EmbedBuilder:
@@ -278,7 +278,7 @@ class EmbedBuilder:
         )
 
         if debate_round.motion:
-            embed.set_footer(text="When the round is over, a judge can click 'Mark Round Complete' below.")
+            embed.set_footer(text="When the round is over, a judge can submit the ballot below.")
         else:
             embed.set_footer(text="Chair judge: use the controls below to set the motion and start prep.")
         return embed
@@ -398,6 +398,109 @@ class EmbedBuilder:
                 f"**Status:** {status}\n\n"
                 "Use `/invite @user` to add members.\n"
                 "Use `/leaveparty` to leave."
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
+    def create_ballot_results_embed(debate_round) -> discord.Embed:
+        """Create full ballot results embed showing winner, all speaker scores, and totals."""
+        ballot = debate_round.ballot
+        winner_color = EmbedBuilder.COLOR_GOV if ballot.winner == "Government" else EmbedBuilder.COLOR_OPP
+
+        embed = discord.Embed(
+            title=f"Round {debate_round.round_id} — Ballot Results",
+            description=f"**Motion:** {debate_round.motion}",
+            color=winner_color
+        )
+
+        # Government scores
+        gov_lines = []
+        for s in ballot.gov_scores:
+            gov_lines.append(f"**{s.position_name}** ({s.member.display_name}): **{s.score}**")
+        gov_lines.append(f"\nTotal: **{ballot.gov_total}**")
+        win_tag = " ✦ WINNER" if ballot.winner == "Government" else ""
+        embed.add_field(
+            name=f"Government{win_tag}",
+            value="\n".join(gov_lines),
+            inline=True
+        )
+
+        # Opposition scores
+        opp_lines = []
+        for s in ballot.opp_scores:
+            opp_lines.append(f"**{s.position_name}** ({s.member.display_name}): **{s.score}**")
+        opp_lines.append(f"\nTotal: **{ballot.opp_total}**")
+        win_tag = " ✦ WINNER" if ballot.winner == "Opposition" else ""
+        embed.add_field(
+            name=f"Opposition{win_tag}",
+            value="\n".join(opp_lines),
+            inline=True
+        )
+
+        embed.set_footer(text=f"Judged by {ballot.judge.display_name}")
+        return embed
+
+    @staticmethod
+    def create_ballot_ready_dm_embed(debate_round) -> discord.Embed:
+        """Create DM embed telling debaters the ballot is ready and they need to rate the judge."""
+        return discord.Embed(
+            title=f"Round {debate_round.round_id} — Ballot Ready",
+            description=(
+                "The judge has submitted the ballot for your round.\n\n"
+                "**Rate the judge to see your results.** Click the button below to submit your rating."
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
+    def create_judge_ratings_embed(debate_round, ratings: list) -> discord.Embed:
+        """Create DM embed for the judge showing aggregated debater ratings."""
+        if not ratings:
+            avg_score = 0
+        else:
+            avg_score = sum(r.score for r in ratings) / len(ratings)
+
+        embed = discord.Embed(
+            title=f"Round {debate_round.round_id} — Your Judge Ratings",
+            description=f"**Average Score:** {avg_score:.1f} / 10",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        feedback_lines = []
+        for r in ratings:
+            line = f"**{r.debater.display_name}:** {r.score}/10"
+            if r.feedback:
+                line += f"\n> {r.feedback}"
+            feedback_lines.append(line)
+
+        if feedback_lines:
+            embed.add_field(
+                name="Individual Ratings",
+                value="\n\n".join(feedback_lines),
+                inline=False
+            )
+
+        embed.set_footer(text="Thank you for judging!")
+        return embed
+
+    @staticmethod
+    def create_ballot_submitted_embed(round_id: int) -> discord.Embed:
+        """Create embed posted in text channel after ballot submission."""
+        return discord.Embed(
+            title="Ballot Submitted",
+            description=f"The ballot for Round {round_id} has been submitted. Debaters have been notified.",
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+
+    @staticmethod
+    def create_post_ballot_channel_embed(round_id: int) -> discord.Embed:
+        """Create embed accompanying the Mark Round as Complete button after ballot."""
+        return discord.Embed(
+            title="Round Channels",
+            description=(
+                f"The ballot for Round {round_id} has been submitted.\n"
+                "When you're ready, click below to delete the round channels."
             ),
             color=EmbedBuilder.COLOR_PRIMARY
         )

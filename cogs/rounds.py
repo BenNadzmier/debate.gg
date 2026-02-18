@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Optional
 
-from utils.models import DebateRound, RoundType
+from utils.models import DebateRound, RoundType, SpeakerScore, Ballot, JudgeRating
 from utils.embeds import EmbedBuilder
 from config import Config
 
@@ -125,26 +125,246 @@ class ParticipantConfirmationView(discord.ui.View):
         )
 
 
-class RoundCompleteView(discord.ui.View):
-    """Persistent view for marking a round as complete."""
+class SubmitBallotView(discord.ui.View):
+    """Persistent view for submitting a ballot."""
+
+    def __init__(self, rounds_cog, round_id: int):
+        super().__init__(timeout=None)
+        self.rounds_cog = rounds_cog
+        self.round_id = round_id
+        # Temporary storage for page 1 data during two-page flow
+        self.pending_winner: Optional[str] = None
+        self.pending_gov_scores: list = []
+
+        self.clear_items()
+        btn = discord.ui.Button(
+            label="Submit Ballot",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"submit_ballot:{round_id}"
+        )
+        btn.callback = self.submit_ballot_callback
+        self.add_item(btn)
+
+    async def submit_ballot_callback(self, interaction: discord.Interaction):
+        """Handle the ballot submission button click."""
+        matchmaking_cog = self.rounds_cog.bot.get_cog("Matchmaking")
+        debate_round = matchmaking_cog.active_rounds.get(self.round_id) if matchmaking_cog else None
+
+        if not debate_round:
+            await interaction.response.send_message("Round not found.", ephemeral=True)
+            return
+
+        # Verify user is a judge
+        judge_ids = {j.id for j in debate_round.judges.get_all_judges()}
+        if interaction.user.id not in judge_ids:
+            await interaction.response.send_message(
+                "Only judges can submit the ballot.", ephemeral=True
+            )
+            return
+
+        # Check if ballot already submitted
+        if debate_round.ballot is not None:
+            await interaction.response.send_message(
+                "A ballot has already been submitted for this round.", ephemeral=True
+            )
+            return
+
+        modal = BallotPage1Modal(self, debate_round, interaction.user)
+        await interaction.response.send_modal(modal)
+
+
+class BallotPage1Modal(discord.ui.Modal):
+    """Modal for entering winner and government speaker scores."""
+
+    def __init__(self, ballot_view: SubmitBallotView, debate_round: DebateRound, judge: discord.Member):
+        super().__init__(title="Submit Ballot — Page 1")
+        self.ballot_view = ballot_view
+        self.debate_round = debate_round
+        self.judge = judge
+        self.is_1v1 = debate_round.round_type == RoundType.PM_LO
+
+        # Winner field
+        self.winner_input = discord.ui.InputText(
+            label="Winner",
+            placeholder="Government or Opposition",
+            style=discord.InputTextStyle.short,
+            required=True
+        )
+        self.add_item(self.winner_input)
+
+        # Gov speaker score fields
+        self.gov_inputs = []
+        for i, member in enumerate(debate_round.government.members):
+            position = debate_round.government.get_position_name(i)
+            inp = discord.ui.InputText(
+                label=f"{position} Score ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.gov_inputs.append((inp, member, position))
+
+        # For 1v1, also include the single opp speaker
+        self.opp_inputs = []
+        if self.is_1v1:
+            for i, member in enumerate(debate_round.opposition.members):
+                position = debate_round.opposition.get_position_name(i)
+                inp = discord.ui.InputText(
+                    label=f"{position} Score ({member.display_name})",
+                    placeholder="50-100",
+                    style=discord.InputTextStyle.short,
+                    required=True
+                )
+                self.add_item(inp)
+                self.opp_inputs.append((inp, member, position))
+
+    async def callback(self, interaction: discord.Interaction):
+        # Parse winner
+        winner_raw = self.winner_input.value.strip().lower()
+        if winner_raw in ("gov", "government"):
+            winner = "Government"
+        elif winner_raw in ("opp", "opposition"):
+            winner = "Opposition"
+        else:
+            await interaction.response.send_message(
+                "Invalid winner. Please enter 'Government' or 'Opposition'.", ephemeral=True
+            )
+            return
+
+        # Parse gov scores
+        gov_scores = []
+        for inp, member, position in self.gov_inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {position}. Please enter a number between 50-100.", ephemeral=True
+                )
+                return
+            gov_scores.append(SpeakerScore(member=member, position_name=position, score=score))
+
+        if self.is_1v1:
+            # Parse opp scores and finalize immediately
+            opp_scores = []
+            for inp, member, position in self.opp_inputs:
+                try:
+                    score = int(inp.value.strip())
+                except ValueError:
+                    await interaction.response.send_message(
+                        f"Invalid score for {position}. Please enter a number between 50-100.", ephemeral=True
+                    )
+                    return
+                opp_scores.append(SpeakerScore(member=member, position_name=position, score=score))
+
+            ballot = Ballot(judge=self.judge, winner=winner, gov_scores=gov_scores, opp_scores=opp_scores)
+            error = ballot.validate()
+            if error:
+                await interaction.response.send_message(f"Validation error: {error}", ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            await self.ballot_view.rounds_cog.finalize_ballot(
+                interaction, self.debate_round, ballot, self.ballot_view
+            )
+        else:
+            # Store page 1 data, show continue button for page 2
+            self.ballot_view.pending_winner = winner
+            self.ballot_view.pending_gov_scores = gov_scores
+
+            continue_view = BallotPage2ContinueView(
+                self.ballot_view, self.debate_round, self.judge
+            )
+            await interaction.response.send_message(
+                "Government scores recorded. Click below to enter Opposition scores.",
+                view=continue_view,
+                ephemeral=True
+            )
+
+
+class BallotPage2ContinueView(discord.ui.View):
+    """Ephemeral view with a button to open the second ballot modal."""
+
+    def __init__(self, ballot_view: SubmitBallotView, debate_round: DebateRound, judge: discord.Member):
+        super().__init__(timeout=300)
+        self.ballot_view = ballot_view
+        self.debate_round = debate_round
+        self.judge = judge
+
+    @discord.ui.button(label="Continue to Opposition Scores", style=discord.ButtonStyle.primary)
+    async def continue_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        modal = BallotPage2Modal(self.ballot_view, self.debate_round, self.judge)
+        await interaction.response.send_modal(modal)
+
+
+class BallotPage2Modal(discord.ui.Modal):
+    """Modal for entering opposition speaker scores (page 2)."""
+
+    def __init__(self, ballot_view: SubmitBallotView, debate_round: DebateRound, judge: discord.Member):
+        super().__init__(title="Submit Ballot — Opposition Scores")
+        self.ballot_view = ballot_view
+        self.debate_round = debate_round
+        self.judge = judge
+
+        self.opp_inputs = []
+        for i, member in enumerate(debate_round.opposition.members):
+            position = debate_round.opposition.get_position_name(i)
+            inp = discord.ui.InputText(
+                label=f"{position} Score ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.opp_inputs.append((inp, member, position))
+
+    async def callback(self, interaction: discord.Interaction):
+        opp_scores = []
+        for inp, member, position in self.opp_inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {position}. Please enter a number between 50-100.", ephemeral=True
+                )
+                return
+            opp_scores.append(SpeakerScore(member=member, position_name=position, score=score))
+
+        ballot = Ballot(
+            judge=self.judge,
+            winner=self.ballot_view.pending_winner,
+            gov_scores=self.ballot_view.pending_gov_scores,
+            opp_scores=opp_scores
+        )
+        error = ballot.validate()
+        if error:
+            await interaction.response.send_message(f"Validation error: {error}", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self.ballot_view.rounds_cog.finalize_ballot(
+            interaction, self.debate_round, ballot, self.ballot_view
+        )
+
+
+class PostBallotRoundCompleteView(discord.ui.View):
+    """Persistent view for deleting channels after ballot is submitted."""
 
     def __init__(self, rounds_cog, round_id: int):
         super().__init__(timeout=None)
         self.rounds_cog = rounds_cog
         self.round_id = round_id
 
-        # Use custom_id for persistence across bot restarts
         self.clear_items()
         btn = discord.ui.Button(
-            label="Mark Round Complete",
+            label="Mark Round as Complete",
             style=discord.ButtonStyle.danger,
-            custom_id=f"round_complete:{round_id}"
+            custom_id=f"post_ballot_complete:{round_id}"
         )
         btn.callback = self.complete_callback
         self.add_item(btn)
 
     async def complete_callback(self, interaction: discord.Interaction):
-        """Handle the round completion."""
         matchmaking_cog = self.rounds_cog.bot.get_cog("Matchmaking")
         debate_round = matchmaking_cog.active_rounds.get(self.round_id) if matchmaking_cog else None
 
@@ -157,7 +377,28 @@ class RoundCompleteView(discord.ui.View):
                 )
                 return
 
+        confirm_view = ChannelDeletionConfirmView(self.rounds_cog, self.round_id)
+        await interaction.response.send_message(
+            "Are you sure you want to delete all round channels? This cannot be undone.",
+            view=confirm_view,
+            ephemeral=True
+        )
+
+
+class ChannelDeletionConfirmView(discord.ui.View):
+    """Ephemeral confirmation view for deleting round channels."""
+
+    def __init__(self, rounds_cog, round_id: int):
+        super().__init__(timeout=60)
+        self.rounds_cog = rounds_cog
+        self.round_id = round_id
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.defer()
+
+        matchmaking_cog = self.rounds_cog.bot.get_cog("Matchmaking")
+        debate_round = matchmaking_cog.active_rounds.get(self.round_id) if matchmaking_cog else None
 
         # Cancel prep timer if still running
         if debate_round and hasattr(debate_round, '_prep_task') and debate_round._prep_task:
@@ -175,6 +416,97 @@ class RoundCompleteView(discord.ui.View):
         if lobby_channel:
             embed = EmbedBuilder.create_round_complete_embed(self.round_id)
             await lobby_channel.send(embed=embed)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="Channel deletion cancelled.", view=None)
+
+
+class RateJudgeView(discord.ui.View):
+    """DM view for debaters to rate the judge."""
+
+    def __init__(self, rounds_cog, debate_round: DebateRound, debater: discord.Member):
+        super().__init__(timeout=None)
+        self.rounds_cog = rounds_cog
+        self.debate_round = debate_round
+        self.debater = debater
+
+    @discord.ui.button(label="Rate Judge", style=discord.ButtonStyle.primary)
+    async def rate_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        # Check if already rated
+        if self.debater.id in self.debate_round.rated_debater_ids:
+            await interaction.response.send_message("You have already rated the judge.", ephemeral=True)
+            return
+
+        modal = RateJudgeModal(self.rounds_cog, self.debate_round, self.debater, self)
+        await interaction.response.send_modal(modal)
+
+
+class RateJudgeModal(discord.ui.Modal):
+    """Modal for debaters to rate the judge."""
+
+    def __init__(self, rounds_cog, debate_round: DebateRound, debater: discord.Member, rate_view: RateJudgeView):
+        super().__init__(title="Rate the Judge")
+        self.rounds_cog = rounds_cog
+        self.debate_round = debate_round
+        self.debater = debater
+        self.rate_view = rate_view
+
+        self.score_input = discord.ui.InputText(
+            label="Score (1-10)",
+            placeholder="1-10",
+            style=discord.InputTextStyle.short,
+            required=True
+        )
+        self.add_item(self.score_input)
+
+        self.feedback_input = discord.ui.InputText(
+            label="Feedback for the judge (optional)",
+            placeholder="Any comments for the judge...",
+            style=discord.InputTextStyle.long,
+            required=False
+        )
+        self.add_item(self.feedback_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Parse score
+        try:
+            score = int(self.score_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message("Invalid score. Please enter a number between 1-10.", ephemeral=True)
+            return
+
+        if not (1 <= score <= 10):
+            await interaction.response.send_message("Score must be between 1 and 10.", ephemeral=True)
+            return
+
+        feedback = self.feedback_input.value.strip() if self.feedback_input.value else None
+
+        # Record the rating
+        rating = JudgeRating(debater=self.debater, score=score, feedback=feedback)
+        self.debate_round.judge_ratings.append(rating)
+        self.debate_round.rated_debater_ids.add(self.debater.id)
+
+        # Disable the Rate Judge button in the DM
+        for item in self.rate_view.children:
+            item.disabled = True
+        if hasattr(self.rate_view, 'message') and self.rate_view.message:
+            try:
+                await self.rate_view.message.edit(view=self.rate_view)
+            except:
+                pass
+
+        # Send the debater the full ballot results
+        ballot_embed = EmbedBuilder.create_ballot_results_embed(self.debate_round)
+        await interaction.response.send_message(embed=ballot_embed)
+
+        # Check if all debaters have rated
+        all_debater_ids = {
+            m.id for m in self.debate_round.government.members + self.debate_round.opposition.members
+        }
+        if self.debate_round.rated_debater_ids >= all_debater_ids:
+            # All debaters have rated — send aggregated ratings to judge
+            await self.rounds_cog.send_judge_ratings(self.debate_round)
 
 
 class MotionInputModal(discord.ui.Modal):
@@ -350,11 +682,14 @@ class Rounds(commands.Cog):
         await self._register_persistent_views()
 
     async def _register_persistent_views(self):
-        """Register persistent RoundCompleteView instances for active rounds."""
+        """Register persistent views for active rounds."""
         matchmaking_cog = self.bot.get_cog("Matchmaking")
         if matchmaking_cog and hasattr(matchmaking_cog, 'active_rounds'):
-            for round_id in matchmaking_cog.active_rounds:
-                view = RoundCompleteView(self, round_id)
+            for round_id, debate_round in matchmaking_cog.active_rounds.items():
+                if debate_round.ballot is not None:
+                    view = PostBallotRoundCompleteView(self, round_id)
+                else:
+                    view = SubmitBallotView(self, round_id)
                 self.bot.add_view(view)
                 logger.info(f"Re-registered persistent view for round {round_id}")
 
@@ -475,13 +810,13 @@ class Rounds(commands.Cog):
             # Track as active round
             matchmaking_cog.add_active_round(debate_round)
 
-            # Register persistent view
-            complete_view = RoundCompleteView(self, round_id)
-            self.bot.add_view(complete_view)
+            # Register persistent ballot view
+            ballot_view = SubmitBallotView(self, round_id)
+            self.bot.add_view(ballot_view)
 
-            # Post round info + complete button in text channel
+            # Post round info + ballot button in text channel
             round_embed = EmbedBuilder.create_round_text_channel_embed(debate_round)
-            round_info_message = await text_channel.send(embed=round_embed, view=complete_view)
+            round_info_message = await text_channel.send(embed=round_embed, view=ballot_view)
 
             # Post chair judge controls
             chair_view = ChairJudgeControlView(self, debate_round, round_info_message)
@@ -523,6 +858,78 @@ class Rounds(commands.Cog):
                 await member.send(embed=embed)
             except discord.Forbidden:
                 pass  # DMs disabled
+
+    async def finalize_ballot(
+        self,
+        interaction: discord.Interaction,
+        debate_round: DebateRound,
+        ballot: Ballot,
+        ballot_view: SubmitBallotView
+    ):
+        """Finalize a ballot submission: store, DM judge, DM debaters, post in channel."""
+        debate_round.ballot = ballot
+
+        # Cancel prep timer if still running
+        if hasattr(debate_round, '_prep_task') and debate_round._prep_task:
+            debate_round._prep_task.cancel()
+
+        # Disable the Submit Ballot button
+        ballot_view.clear_items()
+        btn = discord.ui.Button(
+            label="Ballot Submitted",
+            style=discord.ButtonStyle.secondary,
+            disabled=True,
+            custom_id=f"submit_ballot:{ballot_view.round_id}"
+        )
+        ballot_view.add_item(btn)
+
+        # Find the text channel
+        text_channel = interaction.guild.get_channel(debate_round.channel_ids.get("text"))
+
+        # Try to update the original ballot button message
+        if text_channel:
+            # We can't easily get the original message, so just post updates
+            pass
+
+        # DM the judge with full ballot results
+        try:
+            ballot_embed = EmbedBuilder.create_ballot_results_embed(debate_round)
+            await ballot.judge.send(embed=ballot_embed)
+        except discord.Forbidden:
+            pass
+
+        # DM each debater with "ballot ready" + Rate Judge button
+        all_debaters = debate_round.government.members + debate_round.opposition.members
+        for debater in all_debaters:
+            try:
+                embed = EmbedBuilder.create_ballot_ready_dm_embed(debate_round)
+                rate_view = RateJudgeView(self, debate_round, debater)
+                rate_view.message = await debater.send(embed=embed, view=rate_view)
+            except discord.Forbidden:
+                pass
+
+        # Post ballot submitted embed in text channel
+        if text_channel:
+            embed = EmbedBuilder.create_ballot_submitted_embed(debate_round.round_id)
+            await text_channel.send(embed=embed)
+
+            # Post the "Mark Round as Complete" button
+            complete_view = PostBallotRoundCompleteView(self, debate_round.round_id)
+            self.bot.add_view(complete_view)
+            channel_embed = EmbedBuilder.create_post_ballot_channel_embed(debate_round.round_id)
+            await text_channel.send(embed=channel_embed, view=complete_view)
+
+        logger.info(f"Ballot finalized for round {debate_round.round_id}")
+
+    async def send_judge_ratings(self, debate_round: DebateRound):
+        """Send aggregated debater ratings to the judge."""
+        judge = debate_round.ballot.judge
+        try:
+            embed = EmbedBuilder.create_judge_ratings_embed(debate_round, debate_round.judge_ratings)
+            await judge.send(embed=embed)
+        except discord.Forbidden:
+            pass
+        logger.info(f"Sent aggregated judge ratings for round {debate_round.round_id}")
 
     async def run_prep_timer(self, guild: discord.Guild, debate_round: DebateRound, text_channel: discord.TextChannel, duration: int):
         """Run the prep timer and auto-move debaters when done."""

@@ -142,6 +142,50 @@ class JudgePanel:
 
 
 @dataclass
+class SpeakerScore:
+    """A single speaker's score in a ballot."""
+    member: discord.Member
+    position_name: str  # e.g. "Prime Minister", "Leader of Opposition"
+    score: int  # 50-100
+
+
+@dataclass
+class Ballot:
+    """A judge's ballot for a round."""
+    judge: discord.Member
+    winner: str  # "Government" or "Opposition"
+    gov_scores: List[SpeakerScore] = field(default_factory=list)
+    opp_scores: List[SpeakerScore] = field(default_factory=list)
+
+    @property
+    def gov_total(self) -> int:
+        return sum(s.score for s in self.gov_scores)
+
+    @property
+    def opp_total(self) -> int:
+        return sum(s.score for s in self.opp_scores)
+
+    def validate(self) -> Optional[str]:
+        """Returns error message if invalid, None if valid."""
+        for s in self.gov_scores + self.opp_scores:
+            if not (50 <= s.score <= 100):
+                return f"Score for {s.position_name} must be between 50-100 (got {s.score})."
+        if self.winner == "Government" and self.gov_total <= self.opp_total:
+            return f"Government won but their total ({self.gov_total}) is not higher than Opposition ({self.opp_total})."
+        if self.winner == "Opposition" and self.opp_total <= self.gov_total:
+            return f"Opposition won but their total ({self.opp_total}) is not higher than Government ({self.gov_total})."
+        return None
+
+
+@dataclass
+class JudgeRating:
+    """A debater's rating of a judge."""
+    debater: discord.Member
+    score: int  # 1-10
+    feedback: Optional[str] = None
+
+
+@dataclass
 class DebateRound:
     """Represents a complete debate round."""
     round_id: int
@@ -154,6 +198,9 @@ class DebateRound:
     format_label: Optional[str] = None
     category_id: Optional[int] = None
     channel_ids: dict = field(default_factory=dict)
+    ballot: Optional['Ballot'] = None
+    judge_ratings: List['JudgeRating'] = field(default_factory=list)
+    rated_debater_ids: set = field(default_factory=set)
 
     def get_all_participants(self) -> List[discord.Member]:
         """Get all participants in the round."""

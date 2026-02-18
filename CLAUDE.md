@@ -26,8 +26,11 @@ A Discord bot for matchmaking debate rounds. Users queue up as debaters or judge
 - **RoundType**: `PM_LO` (1v1), `DOUBLE_IRON` (2v2), `SINGLE_IRON` (3v2), `STANDARD` (3v3)
 - **TeamType**: `SOLO` (1), `IRON` (2), `FULL` (3)
 - **MatchmakingQueue**: Separate debater/judge lists per format, threshold detection
-- **DebateRound**: Teams, judges, motion, channel IDs, category ID, format label
+- **DebateRound**: Teams, judges, motion, channel IDs, category ID, format label, ballot, judge_ratings, rated_debater_ids
 - **Party**: Host + members (max 3), used for AP queue team grouping
+- **SpeakerScore**: member, position_name, score (50-100)
+- **Ballot**: judge, winner, gov_scores, opp_scores, validate() method
+- **JudgeRating**: debater, score (1-10), optional feedback
 
 ## Round Lifecycle Flow
 1. Users `/queue` as debater/judge for 1v1 or AP
@@ -38,7 +41,11 @@ A Discord bot for matchmaking debate rounds. Users queue up as debaters or judge
 6. Chair judge enters motion via "Enter Motion" button in text channel
 7. Chair judge clicks "Start Prep" → timer starts (15 min 1v1 / 30 min AP)
 8. Timer expires → bot auto-moves debaters from prep VCs to debate VC
-9. Judge clicks "Mark Round Complete" → all channels + category deleted
+9. Judge clicks "Submit Ballot" → two-page modal (winner + speaker scores)
+10. Ballot validated → judge gets DM with results, debaters get "Rate Judge" DM
+11. Debaters rate judge (1-10 + optional feedback) → receive full ballot results
+12. After all debaters rate → judge gets aggregated ratings DM
+13. Judge clicks "Mark Round as Complete" → confirmation → channels + category deleted
 
 ## Channel Permissions
 - **Category + Text + Debate VC**: All round participants can see/access
@@ -84,6 +91,38 @@ Debaters can form parties (max 3 members) to be guaranteed on the same team in A
 ### Storage (on Matchmaking cog, in-memory)
 - `self.parties: dict[int, Party]` — host_id → Party
 - `self.member_to_party: dict[int, int]` — member_id → host_id
+
+## Ballot & Results System
+After the debate, the judge submits a ballot with speaker scores and winner selection.
+
+### Ballot Flow
+1. Judge clicks "Submit Ballot" in text channel → `BallotPage1Modal` (winner + gov scores)
+2. For 1v1: single modal includes opp score → finalizes immediately
+3. For AP: ephemeral "Continue" button → `BallotPage2Modal` (opp scores)
+4. Validation: scores 50-100, winning team total > losing team total
+5. `finalize_ballot()`: stores ballot, DMs judge results, DMs debaters with "Rate Judge" button
+
+### Judge Rating Flow
+1. Debaters click "Rate Judge" in DM → `RateJudgeModal` (score 1-10, optional feedback)
+2. After submitting rating, debater receives full ballot results DM
+3. After ALL debaters rate, judge receives aggregated ratings DM (average + individual feedback)
+
+### Channel Deletion (separate from ballot)
+- After ballot submission, "Mark Round as Complete" button appears
+- Clicking it shows ephemeral confirmation dialog → channels deleted on confirm
+
+### Discord Modal Limit (5 fields max)
+- 1v1: 3 fields (winner + PM + LO) → single modal
+- 2v2: 3 fields page 1 (winner + 2 gov) → 2 fields page 2
+- 3v3: 4 fields page 1 (winner + 3 gov) → 3 fields page 2
+- Cannot chain modals directly; use ephemeral "Continue" button between pages
+
+### Views in cogs/rounds.py
+- `SubmitBallotView` (persistent, custom_id=`submit_ballot:{round_id}`)
+- `PostBallotRoundCompleteView` (persistent, custom_id=`post_ballot_complete:{round_id}`)
+- `BallotPage2ContinueView` (ephemeral, timeout=300)
+- `ChannelDeletionConfirmView` (ephemeral, timeout=60)
+- `RateJudgeView` (DM, timeout=None)
 
 ## Important Patterns
 - py-cord button callbacks require `(self, button, interaction)` signature even if `button` is unused
