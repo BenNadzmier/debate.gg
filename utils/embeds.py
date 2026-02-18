@@ -95,16 +95,10 @@ class EmbedBuilder:
 
     @staticmethod
     def _format_team_text(team) -> str:
-        """Format team member text with positions."""
+        """Format team member text (no positions — teams decide their own speaker order)."""
         if not team.members:
             return "*No members assigned*"
-
-        lines = []
-        for i, member in enumerate(team.members):
-            position = team.get_position_name(i)
-            lines.append(f"**{position}**\n{member.mention}")
-
-        return "\n\n".join(lines)
+        return "\n".join(member.mention for member in team.members)
 
     @staticmethod
     def _format_judge_text(judges) -> str:
@@ -418,6 +412,8 @@ class EmbedBuilder:
         gov_lines = []
         for s in ballot.gov_scores:
             gov_lines.append(f"**{s.position_name}** ({s.member.display_name}): **{s.score}**")
+        if ballot.gov_reply:
+            gov_lines.append(f"**Reply** ({ballot.gov_reply.member.display_name}): **{ballot.gov_reply.score}**")
         gov_lines.append(f"\nTotal: **{ballot.gov_total}**")
         win_tag = " ✦ WINNER" if ballot.winner == "Government" else ""
         embed.add_field(
@@ -430,6 +426,8 @@ class EmbedBuilder:
         opp_lines = []
         for s in ballot.opp_scores:
             opp_lines.append(f"**{s.position_name}** ({s.member.display_name}): **{s.score}**")
+        if ballot.opp_reply:
+            opp_lines.append(f"**Reply** ({ballot.opp_reply.member.display_name}): **{ballot.opp_reply.score}**")
         opp_lines.append(f"\nTotal: **{ballot.opp_total}**")
         win_tag = " ✦ WINNER" if ballot.winner == "Opposition" else ""
         embed.add_field(

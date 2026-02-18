@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Optional
 
-from utils.models import DebateRound, RoundType, SpeakerScore, Ballot, JudgeRating
+from utils.models import DebateRound, RoundType, SpeakerScore, Ballot, JudgeRating, BallotDraft
 from utils.embeds import EmbedBuilder
 from config import Config
 
@@ -132,9 +132,6 @@ class SubmitBallotView(discord.ui.View):
         super().__init__(timeout=None)
         self.rounds_cog = rounds_cog
         self.round_id = round_id
-        # Temporary storage for page 1 data during two-page flow
-        self.pending_winner: Optional[str] = None
-        self.pending_gov_scores: list = []
 
         self.clear_items()
         btn = discord.ui.Button(
@@ -154,7 +151,6 @@ class SubmitBallotView(discord.ui.View):
             await interaction.response.send_message("Round not found.", ephemeral=True)
             return
 
-        # Verify user is a judge
         judge_ids = {j.id for j in debate_round.judges.get_all_judges()}
         if interaction.user.id not in judge_ids:
             await interaction.response.send_message(
@@ -162,179 +158,137 @@ class SubmitBallotView(discord.ui.View):
             )
             return
 
-        # Check if ballot already submitted
         if debate_round.ballot is not None:
             await interaction.response.send_message(
                 "A ballot has already been submitted for this round.", ephemeral=True
             )
             return
 
-        modal = BallotPage1Modal(self, debate_round, interaction.user)
-        await interaction.response.send_modal(modal)
+        draft = BallotDraft(
+            ballot_view=self, debate_round=debate_round, judge=interaction.user
+        )
+        view = WinnerSelectView(draft)
+        await interaction.response.send_message(
+            "Select the winning side to begin the ballot.",
+            view=view,
+            ephemeral=True
+        )
 
 
-class BallotPage1Modal(discord.ui.Modal):
-    """Modal for entering winner and government speaker scores."""
+def _get_team_positions(team) -> list:
+    """Get all position names for a team based on its type."""
+    return [team.get_position_name(i) for i in range(len(team.members))]
 
-    def __init__(self, ballot_view: SubmitBallotView, debate_round: DebateRound, judge: discord.Member):
-        super().__init__(title="Submit Ballot — Page 1")
-        self.ballot_view = ballot_view
-        self.debate_round = debate_round
-        self.judge = judge
-        self.is_1v1 = debate_round.round_type == RoundType.PM_LO
 
-        # Winner field
-        self.winner_input = discord.ui.InputText(
-            label="Winner",
-            placeholder="Government or Opposition",
+def _build_member_options(members) -> list:
+    """Build discord.SelectOption list from team members."""
+    return [
+        discord.SelectOption(label=m.display_name, value=str(m.id))
+        for m in members
+    ]
+
+
+def _build_member_lookup(members) -> dict:
+    """Build {str(member_id): member} lookup dict."""
+    return {str(m.id): m for m in members}
+
+
+class WinnerSelectView(discord.ui.View):
+    """Ephemeral view for selecting the winning side."""
+
+    def __init__(self, draft: BallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+        self.is_1v1 = draft.debate_round.round_type == RoundType.PM_LO
+
+        self.winner_select = discord.ui.Select(
+            placeholder="Select the winning side",
+            options=[
+                discord.SelectOption(label="Government", value="Government"),
+                discord.SelectOption(label="Opposition", value="Opposition"),
+            ]
+        )
+        self.winner_select.callback = self._winner_callback
+        self.add_item(self.winner_select)
+
+        label = "Continue to Scores" if self.is_1v1 else "Next: Assign Gov Positions"
+        self.next_btn = discord.ui.Button(
+            label=label, style=discord.ButtonStyle.primary, disabled=True
+        )
+        self.next_btn.callback = self._next_callback
+        self.add_item(self.next_btn)
+
+    async def _winner_callback(self, interaction: discord.Interaction):
+        self.draft.winner = self.winner_select.values[0]
+        self.next_btn.disabled = False
+        await interaction.response.edit_message(
+            content=f"Winner: **{self.draft.winner}**. Click the button to continue.",
+            view=self
+        )
+
+    async def _next_callback(self, interaction: discord.Interaction):
+        if self.is_1v1:
+            modal = ScoreModal1v1(self.draft)
+            await interaction.response.send_modal(modal)
+        else:
+            view = GovAssignmentView(self.draft)
+            await interaction.response.edit_message(
+                content="Assign **Government** positions. Select which debater fills each role.",
+                view=view
+            )
+
+
+class ScoreModal1v1(discord.ui.Modal):
+    """Modal for 1v1 scores (no reply, positions implicit)."""
+
+    def __init__(self, draft: BallotDraft):
+        super().__init__(title="Submit Ballot — Scores")
+        self.draft = draft
+
+        gov_member = draft.debate_round.government.members[0]
+        opp_member = draft.debate_round.opposition.members[0]
+
+        self.pm_input = discord.ui.InputText(
+            label=f"Prime Minister ({gov_member.display_name})",
+            placeholder="50-100",
             style=discord.InputTextStyle.short,
             required=True
         )
-        self.add_item(self.winner_input)
+        self.add_item(self.pm_input)
 
-        # Gov speaker score fields
-        self.gov_inputs = []
-        for i, member in enumerate(debate_round.government.members):
-            position = debate_round.government.get_position_name(i)
-            inp = discord.ui.InputText(
-                label=f"{position} Score ({member.display_name})",
-                placeholder="50-100",
-                style=discord.InputTextStyle.short,
-                required=True
-            )
-            self.add_item(inp)
-            self.gov_inputs.append((inp, member, position))
-
-        # For 1v1, also include the single opp speaker
-        self.opp_inputs = []
-        if self.is_1v1:
-            for i, member in enumerate(debate_round.opposition.members):
-                position = debate_round.opposition.get_position_name(i)
-                inp = discord.ui.InputText(
-                    label=f"{position} Score ({member.display_name})",
-                    placeholder="50-100",
-                    style=discord.InputTextStyle.short,
-                    required=True
-                )
-                self.add_item(inp)
-                self.opp_inputs.append((inp, member, position))
+        self.lo_input = discord.ui.InputText(
+            label=f"Leader of Opposition ({opp_member.display_name})",
+            placeholder="50-100",
+            style=discord.InputTextStyle.short,
+            required=True
+        )
+        self.add_item(self.lo_input)
 
     async def callback(self, interaction: discord.Interaction):
-        # Parse winner
-        winner_raw = self.winner_input.value.strip().lower()
-        if winner_raw in ("gov", "government"):
-            winner = "Government"
-        elif winner_raw in ("opp", "opposition"):
-            winner = "Opposition"
-        else:
+        gov_member = self.draft.debate_round.government.members[0]
+        opp_member = self.draft.debate_round.opposition.members[0]
+
+        try:
+            pm_score = int(self.pm_input.value.strip())
+        except ValueError:
             await interaction.response.send_message(
-                "Invalid winner. Please enter 'Government' or 'Opposition'.", ephemeral=True
+                "Invalid PM score. Enter a number between 50-100.", ephemeral=True
             )
             return
 
-        # Parse gov scores
-        gov_scores = []
-        for inp, member, position in self.gov_inputs:
-            try:
-                score = int(inp.value.strip())
-            except ValueError:
-                await interaction.response.send_message(
-                    f"Invalid score for {position}. Please enter a number between 50-100.", ephemeral=True
-                )
-                return
-            gov_scores.append(SpeakerScore(member=member, position_name=position, score=score))
-
-        if self.is_1v1:
-            # Parse opp scores and finalize immediately
-            opp_scores = []
-            for inp, member, position in self.opp_inputs:
-                try:
-                    score = int(inp.value.strip())
-                except ValueError:
-                    await interaction.response.send_message(
-                        f"Invalid score for {position}. Please enter a number between 50-100.", ephemeral=True
-                    )
-                    return
-                opp_scores.append(SpeakerScore(member=member, position_name=position, score=score))
-
-            ballot = Ballot(judge=self.judge, winner=winner, gov_scores=gov_scores, opp_scores=opp_scores)
-            error = ballot.validate()
-            if error:
-                await interaction.response.send_message(f"Validation error: {error}", ephemeral=True)
-                return
-
-            await interaction.response.defer()
-            await self.ballot_view.rounds_cog.finalize_ballot(
-                interaction, self.debate_round, ballot, self.ballot_view
-            )
-        else:
-            # Store page 1 data, show continue button for page 2
-            self.ballot_view.pending_winner = winner
-            self.ballot_view.pending_gov_scores = gov_scores
-
-            continue_view = BallotPage2ContinueView(
-                self.ballot_view, self.debate_round, self.judge
-            )
+        try:
+            lo_score = int(self.lo_input.value.strip())
+        except ValueError:
             await interaction.response.send_message(
-                "Government scores recorded. Click below to enter Opposition scores.",
-                view=continue_view,
-                ephemeral=True
+                "Invalid LO score. Enter a number between 50-100.", ephemeral=True
             )
-
-
-class BallotPage2ContinueView(discord.ui.View):
-    """Ephemeral view with a button to open the second ballot modal."""
-
-    def __init__(self, ballot_view: SubmitBallotView, debate_round: DebateRound, judge: discord.Member):
-        super().__init__(timeout=300)
-        self.ballot_view = ballot_view
-        self.debate_round = debate_round
-        self.judge = judge
-
-    @discord.ui.button(label="Continue to Opposition Scores", style=discord.ButtonStyle.primary)
-    async def continue_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        modal = BallotPage2Modal(self.ballot_view, self.debate_round, self.judge)
-        await interaction.response.send_modal(modal)
-
-
-class BallotPage2Modal(discord.ui.Modal):
-    """Modal for entering opposition speaker scores (page 2)."""
-
-    def __init__(self, ballot_view: SubmitBallotView, debate_round: DebateRound, judge: discord.Member):
-        super().__init__(title="Submit Ballot — Opposition Scores")
-        self.ballot_view = ballot_view
-        self.debate_round = debate_round
-        self.judge = judge
-
-        self.opp_inputs = []
-        for i, member in enumerate(debate_round.opposition.members):
-            position = debate_round.opposition.get_position_name(i)
-            inp = discord.ui.InputText(
-                label=f"{position} Score ({member.display_name})",
-                placeholder="50-100",
-                style=discord.InputTextStyle.short,
-                required=True
-            )
-            self.add_item(inp)
-            self.opp_inputs.append((inp, member, position))
-
-    async def callback(self, interaction: discord.Interaction):
-        opp_scores = []
-        for inp, member, position in self.opp_inputs:
-            try:
-                score = int(inp.value.strip())
-            except ValueError:
-                await interaction.response.send_message(
-                    f"Invalid score for {position}. Please enter a number between 50-100.", ephemeral=True
-                )
-                return
-            opp_scores.append(SpeakerScore(member=member, position_name=position, score=score))
+            return
 
         ballot = Ballot(
-            judge=self.judge,
-            winner=self.ballot_view.pending_winner,
-            gov_scores=self.ballot_view.pending_gov_scores,
-            opp_scores=opp_scores
+            judge=self.draft.judge,
+            winner=self.draft.winner,
+            gov_scores=[SpeakerScore(member=gov_member, position_name="Prime Minister", score=pm_score)],
+            opp_scores=[SpeakerScore(member=opp_member, position_name="Leader of Opposition", score=lo_score)],
         )
         error = ballot.validate()
         if error:
@@ -342,8 +296,347 @@ class BallotPage2Modal(discord.ui.Modal):
             return
 
         await interaction.response.defer()
-        await self.ballot_view.rounds_cog.finalize_ballot(
-            interaction, self.debate_round, ballot, self.ballot_view
+        await self.draft.ballot_view.rounds_cog.finalize_ballot(
+            interaction, self.draft.debate_round, ballot, self.draft.ballot_view
+        )
+
+
+class GovAssignmentView(discord.ui.View):
+    """Ephemeral view for assigning government positions and reply speaker."""
+
+    def __init__(self, draft: BallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+        team = draft.debate_round.government
+        self.positions = _get_team_positions(team)
+        self.member_lookup = _build_member_lookup(team.members)
+        self.assignments = {}  # position_name -> member_id (str)
+        self.reply_member_id = None
+
+        member_options = _build_member_options(team.members)
+
+        for pos_name in self.positions:
+            select = discord.ui.Select(
+                placeholder=f"Who is {pos_name}?",
+                options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
+            )
+            select.callback = self._make_pos_callback(pos_name)
+            self.add_item(select)
+
+        reply_select = discord.ui.Select(
+            placeholder="Who gives the Gov Reply speech?",
+            options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
+        )
+        reply_select.callback = self._reply_callback
+        self.add_item(reply_select)
+
+        self.next_btn = discord.ui.Button(
+            label="Next: Assign Opp Positions", style=discord.ButtonStyle.primary
+        )
+        self.next_btn.callback = self._next_callback
+        self.add_item(self.next_btn)
+
+    def _make_pos_callback(self, pos_name: str):
+        async def callback(interaction: discord.Interaction):
+            self.assignments[pos_name] = interaction.data["values"][0]
+            await interaction.response.edit_message(view=self)
+        return callback
+
+    async def _reply_callback(self, interaction: discord.Interaction):
+        self.reply_member_id = interaction.data["values"][0]
+        await interaction.response.edit_message(view=self)
+
+    async def _next_callback(self, interaction: discord.Interaction):
+        # Validate all positions filled
+        if len(self.assignments) < len(self.positions):
+            await interaction.response.send_message(
+                "Please assign all positions before continuing.", ephemeral=True
+            )
+            return
+
+        # Validate no duplicates
+        assigned_ids = list(self.assignments.values())
+        if len(set(assigned_ids)) != len(assigned_ids):
+            await interaction.response.send_message(
+                "Each debater must be assigned to exactly one position.", ephemeral=True
+            )
+            return
+
+        # Validate reply selected
+        if not self.reply_member_id:
+            await interaction.response.send_message(
+                "Please select the reply speaker.", ephemeral=True
+            )
+            return
+
+        # Validate reply speaker is not whip
+        reply_position = None
+        for pos, mid in self.assignments.items():
+            if mid == self.reply_member_id:
+                reply_position = pos
+                break
+        if reply_position and "Whip" in reply_position:
+            await interaction.response.send_message(
+                "The reply speaker cannot be the Whip. Please reassign.", ephemeral=True
+            )
+            return
+
+        # Store in draft
+        self.draft.gov_assignments = {
+            pos: self.member_lookup[mid] for pos, mid in self.assignments.items()
+        }
+        self.draft.gov_reply_member = self.member_lookup[self.reply_member_id]
+
+        view = OppAssignmentView(self.draft)
+        await interaction.response.edit_message(
+            content="Assign **Opposition** positions. Select which debater fills each role.",
+            view=view
+        )
+
+
+class OppAssignmentView(discord.ui.View):
+    """Ephemeral view for assigning opposition positions and reply speaker."""
+
+    def __init__(self, draft: BallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+        team = draft.debate_round.opposition
+        self.positions = _get_team_positions(team)
+        self.member_lookup = _build_member_lookup(team.members)
+        self.assignments = {}
+        self.reply_member_id = None
+
+        member_options = _build_member_options(team.members)
+
+        for pos_name in self.positions:
+            select = discord.ui.Select(
+                placeholder=f"Who is {pos_name}?",
+                options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
+            )
+            select.callback = self._make_pos_callback(pos_name)
+            self.add_item(select)
+
+        reply_select = discord.ui.Select(
+            placeholder="Who gives the Opp Reply speech?",
+            options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
+        )
+        reply_select.callback = self._reply_callback
+        self.add_item(reply_select)
+
+        self.next_btn = discord.ui.Button(
+            label="Continue to Scores", style=discord.ButtonStyle.primary
+        )
+        self.next_btn.callback = self._next_callback
+        self.add_item(self.next_btn)
+
+    def _make_pos_callback(self, pos_name: str):
+        async def callback(interaction: discord.Interaction):
+            self.assignments[pos_name] = interaction.data["values"][0]
+            await interaction.response.edit_message(view=self)
+        return callback
+
+    async def _reply_callback(self, interaction: discord.Interaction):
+        self.reply_member_id = interaction.data["values"][0]
+        await interaction.response.edit_message(view=self)
+
+    async def _next_callback(self, interaction: discord.Interaction):
+        if len(self.assignments) < len(self.positions):
+            await interaction.response.send_message(
+                "Please assign all positions before continuing.", ephemeral=True
+            )
+            return
+
+        assigned_ids = list(self.assignments.values())
+        if len(set(assigned_ids)) != len(assigned_ids):
+            await interaction.response.send_message(
+                "Each debater must be assigned to exactly one position.", ephemeral=True
+            )
+            return
+
+        if not self.reply_member_id:
+            await interaction.response.send_message(
+                "Please select the reply speaker.", ephemeral=True
+            )
+            return
+
+        reply_position = None
+        for pos, mid in self.assignments.items():
+            if mid == self.reply_member_id:
+                reply_position = pos
+                break
+        if reply_position and "Whip" in reply_position:
+            await interaction.response.send_message(
+                "The reply speaker cannot be the Whip. Please reassign.", ephemeral=True
+            )
+            return
+
+        # Store in draft
+        self.draft.opp_assignments = {
+            pos: self.member_lookup[mid] for pos, mid in self.assignments.items()
+        }
+        self.draft.opp_reply_member = self.member_lookup[self.reply_member_id]
+
+        # Open gov score modal
+        modal = GovScoreModal(self.draft)
+        await interaction.response.send_modal(modal)
+
+
+class GovScoreModal(discord.ui.Modal):
+    """Modal for entering government substantive + reply scores."""
+
+    def __init__(self, draft: BallotDraft):
+        super().__init__(title="Gov Scores")
+        self.draft = draft
+
+        self.score_inputs = []  # (InputText, position_name, member)
+        for pos_name, member in draft.gov_assignments.items():
+            inp = discord.ui.InputText(
+                label=f"{pos_name} ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.score_inputs.append((inp, pos_name, member))
+
+        self.reply_input = discord.ui.InputText(
+            label=f"Reply ({draft.gov_reply_member.display_name})",
+            placeholder="25-50",
+            style=discord.InputTextStyle.short,
+            required=True
+        )
+        self.add_item(self.reply_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        gov_scores = []
+        for inp, pos_name, member in self.score_inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {pos_name}. Enter a number between 50-100.", ephemeral=True
+                )
+                return
+            gov_scores.append(SpeakerScore(member=member, position_name=pos_name, score=score))
+
+        try:
+            reply_score = int(self.reply_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Invalid reply score. Enter a number between 25-50.", ephemeral=True
+            )
+            return
+
+        # Find the reply speaker's assigned position for validation
+        reply_pos = None
+        for pos_name, member in self.draft.gov_assignments.items():
+            if member.id == self.draft.gov_reply_member.id:
+                reply_pos = pos_name
+                break
+
+        self.draft.gov_scores = gov_scores
+        self.draft.gov_reply_score = SpeakerScore(
+            member=self.draft.gov_reply_member,
+            position_name=reply_pos or "Reply",
+            score=reply_score
+        )
+
+        view = OppScoreContinueView(self.draft)
+        await interaction.response.send_message(
+            "Government scores recorded. Click below to enter Opposition scores.",
+            view=view,
+            ephemeral=True
+        )
+
+
+class OppScoreContinueView(discord.ui.View):
+    """Ephemeral bridge view between GovScoreModal and OppScoreModal."""
+
+    def __init__(self, draft: BallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+
+    @discord.ui.button(label="Continue to Opposition Scores", style=discord.ButtonStyle.primary)
+    async def continue_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        modal = OppScoreModal(self.draft)
+        await interaction.response.send_modal(modal)
+
+
+class OppScoreModal(discord.ui.Modal):
+    """Modal for entering opposition substantive + reply scores, then finalizing."""
+
+    def __init__(self, draft: BallotDraft):
+        super().__init__(title="Opp Scores")
+        self.draft = draft
+
+        self.score_inputs = []
+        for pos_name, member in draft.opp_assignments.items():
+            inp = discord.ui.InputText(
+                label=f"{pos_name} ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.score_inputs.append((inp, pos_name, member))
+
+        self.reply_input = discord.ui.InputText(
+            label=f"Reply ({draft.opp_reply_member.display_name})",
+            placeholder="25-50",
+            style=discord.InputTextStyle.short,
+            required=True
+        )
+        self.add_item(self.reply_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        opp_scores = []
+        for inp, pos_name, member in self.score_inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {pos_name}. Enter a number between 50-100.", ephemeral=True
+                )
+                return
+            opp_scores.append(SpeakerScore(member=member, position_name=pos_name, score=score))
+
+        try:
+            reply_score = int(self.reply_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Invalid reply score. Enter a number between 25-50.", ephemeral=True
+            )
+            return
+
+        # Find the reply speaker's assigned position
+        reply_pos = None
+        for pos_name, member in self.draft.opp_assignments.items():
+            if member.id == self.draft.opp_reply_member.id:
+                reply_pos = pos_name
+                break
+
+        opp_reply = SpeakerScore(
+            member=self.draft.opp_reply_member,
+            position_name=reply_pos or "Reply",
+            score=reply_score
+        )
+
+        ballot = Ballot(
+            judge=self.draft.judge,
+            winner=self.draft.winner,
+            gov_scores=self.draft.gov_scores,
+            opp_scores=opp_scores,
+            gov_reply=self.draft.gov_reply_score,
+            opp_reply=opp_reply,
+        )
+        error = ballot.validate()
+        if error:
+            await interaction.response.send_message(f"Validation error: {error}", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self.draft.ballot_view.rounds_cog.finalize_ballot(
+            interaction, self.draft.debate_round, ballot, self.draft.ballot_view
         )
 
 

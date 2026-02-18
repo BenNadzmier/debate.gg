@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 from enum import Enum
 import discord
 
@@ -156,20 +156,34 @@ class Ballot:
     winner: str  # "Government" or "Opposition"
     gov_scores: List[SpeakerScore] = field(default_factory=list)
     opp_scores: List[SpeakerScore] = field(default_factory=list)
+    gov_reply: Optional[SpeakerScore] = None  # Reply speech score (25-50), AP only
+    opp_reply: Optional[SpeakerScore] = None
 
     @property
     def gov_total(self) -> int:
-        return sum(s.score for s in self.gov_scores)
+        total = sum(s.score for s in self.gov_scores)
+        if self.gov_reply:
+            total += self.gov_reply.score
+        return total
 
     @property
     def opp_total(self) -> int:
-        return sum(s.score for s in self.opp_scores)
+        total = sum(s.score for s in self.opp_scores)
+        if self.opp_reply:
+            total += self.opp_reply.score
+        return total
 
     def validate(self) -> Optional[str]:
         """Returns error message if invalid, None if valid."""
         for s in self.gov_scores + self.opp_scores:
             if not (50 <= s.score <= 100):
                 return f"Score for {s.position_name} must be between 50-100 (got {s.score})."
+        for reply, side in [(self.gov_reply, "Government"), (self.opp_reply, "Opposition")]:
+            if reply:
+                if not (25 <= reply.score <= 50):
+                    return f"Reply score for {side} must be between 25-50 (got {reply.score})."
+                if "Whip" in reply.position_name:
+                    return f"{side} reply speaker cannot be a Whip."
         if self.winner == "Government" and self.gov_total <= self.opp_total:
             return f"Government won but their total ({self.gov_total}) is not higher than Opposition ({self.opp_total})."
         if self.winner == "Opposition" and self.opp_total <= self.gov_total:
@@ -183,6 +197,21 @@ class JudgeRating:
     debater: discord.Member
     score: int  # 1-10
     feedback: Optional[str] = None
+
+
+@dataclass
+class BallotDraft:
+    """Accumulates ballot data across the multi-step ballot flow."""
+    ballot_view: Any  # SubmitBallotView reference
+    debate_round: 'DebateRound'
+    judge: discord.Member
+    winner: Optional[str] = None
+    gov_assignments: dict = field(default_factory=dict)  # position_name -> Member
+    gov_reply_member: Optional[discord.Member] = None
+    opp_assignments: dict = field(default_factory=dict)
+    opp_reply_member: Optional[discord.Member] = None
+    gov_scores: List[SpeakerScore] = field(default_factory=list)
+    gov_reply_score: Optional[SpeakerScore] = None
 
 
 @dataclass

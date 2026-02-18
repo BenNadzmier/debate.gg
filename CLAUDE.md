@@ -28,8 +28,9 @@ A Discord bot for matchmaking debate rounds. Users queue up as debaters or judge
 - **MatchmakingQueue**: Separate debater/judge lists per format, threshold detection
 - **DebateRound**: Teams, judges, motion, channel IDs, category ID, format label, ballot, judge_ratings, rated_debater_ids
 - **Party**: Host + members (max 3), used for AP queue team grouping
-- **SpeakerScore**: member, position_name, score (50-100)
-- **Ballot**: judge, winner, gov_scores, opp_scores, validate() method
+- **SpeakerScore**: member, position_name, score (50-100 substantive, 25-50 reply)
+- **Ballot**: judge, winner, gov_scores, opp_scores, gov_reply, opp_reply, validate() method
+- **BallotDraft**: Accumulates state across the multi-step ballot flow (assignments, scores)
 - **JudgeRating**: debater, score (1-10), optional feedback
 
 ## Round Lifecycle Flow
@@ -93,14 +94,41 @@ Debaters can form parties (max 3 members) to be guaranteed on the same team in A
 - `self.member_to_party: dict[int, int]` — member_id → host_id
 
 ## Ballot & Results System
-After the debate, the judge submits a ballot with speaker scores and winner selection.
+After the debate, the judge submits a ballot with position assignments, speaker scores, and winner selection. Debaters only know their side (Gov/Opp) — the judge reports who spoke which position.
 
-### Ballot Flow
-1. Judge clicks "Submit Ballot" in text channel → `BallotPage1Modal` (winner + gov scores)
-2. For 1v1: single modal includes opp score → finalizes immediately
-3. For AP: ephemeral "Continue" button → `BallotPage2Modal` (opp scores)
-4. Validation: scores 50-100, winning team total > losing team total
-5. `finalize_ballot()`: stores ballot, DMs judge results, DMs debaters with "Rate Judge" button
+### Position Assignment
+- Teams decide their own speaker order during the debate
+- Confirmation/round embeds show members without position names (just mentions)
+- Judge assigns positions via dropdown menus when submitting the ballot
+
+### Reply Speeches (AP only, not 1v1)
+- Each side has a reply speaker (last speaker for each team)
+- Reply speaker can be PM/LO or DPM/DLO, never a Whip
+- Reply speeches scored 25-50 (half the 50-100 substantive range)
+- Reply score counts toward team total
+
+### Ballot Flow — 1v1
+1. Judge clicks "Submit Ballot" → `WinnerSelectView` (dropdown)
+2. "Continue to Scores" button → `ScoreModal1v1` (PM + LO scores, 50-100)
+3. Validation + `finalize_ballot()`: stores ballot, DMs judge results, DMs debaters with "Rate Judge" button
+
+### Ballot Flow — AP
+1. Judge clicks "Submit Ballot" → `WinnerSelectView` (dropdown)
+2. "Next: Assign Gov Positions" → `GovAssignmentView` (position selects + reply select)
+3. "Next: Assign Opp Positions" → `OppAssignmentView` (position selects + reply select)
+4. "Continue to Scores" → `GovScoreModal` (substantive 50-100 + reply 25-50)
+5. `OppScoreContinueView` (bridge button — can't chain modals)
+6. `OppScoreModal` (substantive 50-100 + reply 25-50) → validation + finalize
+
+### Assignment Validation
+- All position selects must be filled
+- No duplicate member assignments (each member exactly one position)
+- Reply speaker cannot be assigned to a Whip position
+
+### Score Validation
+- Substantive scores: 50-100
+- Reply scores: 25-50
+- Winner's total (including reply) must be higher than loser's total
 
 ### Judge Rating Flow
 1. Debaters click "Rate Judge" in DM → `RateJudgeModal` (score 1-10, optional feedback)
@@ -111,18 +139,21 @@ After the debate, the judge submits a ballot with speaker scores and winner sele
 - After ballot submission, "Mark Round as Complete" button appears
 - Clicking it shows ephemeral confirmation dialog → channels deleted on confirm
 
-### Discord Modal Limit (5 fields max)
-- 1v1: 3 fields (winner + PM + LO) → single modal
-- 2v2: 3 fields page 1 (winner + 2 gov) → 2 fields page 2
-- 3v3: 4 fields page 1 (winner + 3 gov) → 3 fields page 2
-- Cannot chain modals directly; use ephemeral "Continue" button between pages
-
 ### Views in cogs/rounds.py
 - `SubmitBallotView` (persistent, custom_id=`submit_ballot:{round_id}`)
+- `WinnerSelectView` (ephemeral, timeout=300)
+- `ScoreModal1v1` (modal, 1v1 only)
+- `GovAssignmentView` / `OppAssignmentView` (ephemeral, timeout=300, AP only)
+- `GovScoreModal` / `OppScoreModal` (modals, AP only)
+- `OppScoreContinueView` (ephemeral bridge, timeout=300)
 - `PostBallotRoundCompleteView` (persistent, custom_id=`post_ballot_complete:{round_id}`)
-- `BallotPage2ContinueView` (ephemeral, timeout=300)
 - `ChannelDeletionConfirmView` (ephemeral, timeout=60)
 - `RateJudgeView` (DM, timeout=None)
+
+### Discord UI Limits
+- Modals: max 5 InputText fields (3v3: 3 substantive + 1 reply = 4 per team)
+- Views: max 5 action rows (3v3 assignment: 3 position selects + 1 reply select + 1 button = 5)
+- Cannot chain modals directly; use ephemeral button bridge between GovScoreModal and OppScoreModal
 
 ## Important Patterns
 - py-cord button callbacks require `(self, button, interaction)` signature even if `button` is unused
