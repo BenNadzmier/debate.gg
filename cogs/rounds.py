@@ -219,7 +219,11 @@ class WinnerSelectView(discord.ui.View):
         self.add_item(self.next_btn)
 
     async def _winner_callback(self, interaction: discord.Interaction):
-        self.draft.winner = self.winner_select.values[0]
+        selected = self.winner_select.values[0]
+        self.draft.winner = selected
+        for option in self.winner_select.options:
+            option.default = (option.value == selected)
+        self.winner_select.placeholder = f"Winner: {selected}"
         self.next_btn.disabled = False
         await interaction.response.edit_message(
             content=f"Winner: **{self.draft.winner}**. Click the button to continue.",
@@ -320,15 +324,15 @@ class GovAssignmentView(discord.ui.View):
                 placeholder=f"Who is {pos_name}?",
                 options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
             )
-            select.callback = self._make_pos_callback(pos_name)
+            select.callback = self._make_pos_callback(pos_name, select)
             self.add_item(select)
 
-        reply_select = discord.ui.Select(
+        self.reply_select = discord.ui.Select(
             placeholder="Who gives the Gov Reply speech?",
             options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
         )
-        reply_select.callback = self._reply_callback
-        self.add_item(reply_select)
+        self.reply_select.callback = self._reply_callback
+        self.add_item(self.reply_select)
 
         self.next_btn = discord.ui.Button(
             label="Next: Assign Opp Positions", style=discord.ButtonStyle.primary
@@ -336,14 +340,24 @@ class GovAssignmentView(discord.ui.View):
         self.next_btn.callback = self._next_callback
         self.add_item(self.next_btn)
 
-    def _make_pos_callback(self, pos_name: str):
+    def _make_pos_callback(self, pos_name: str, select: discord.ui.Select):
         async def callback(interaction: discord.Interaction):
-            self.assignments[pos_name] = interaction.data["values"][0]
+            selected_id = interaction.data["values"][0]
+            self.assignments[pos_name] = selected_id
+            for option in select.options:
+                option.default = (option.value == selected_id)
+            selected_label = next(o.label for o in select.options if o.value == selected_id)
+            select.placeholder = f"{pos_name}: {selected_label}"
             await interaction.response.edit_message(view=self)
         return callback
 
     async def _reply_callback(self, interaction: discord.Interaction):
-        self.reply_member_id = interaction.data["values"][0]
+        selected_id = interaction.data["values"][0]
+        self.reply_member_id = selected_id
+        for option in self.reply_select.options:
+            option.default = (option.value == selected_id)
+        selected_label = next(o.label for o in self.reply_select.options if o.value == selected_id)
+        self.reply_select.placeholder = f"Gov Reply: {selected_label}"
         await interaction.response.edit_message(view=self)
 
     async def _next_callback(self, interaction: discord.Interaction):
@@ -413,15 +427,15 @@ class OppAssignmentView(discord.ui.View):
                 placeholder=f"Who is {pos_name}?",
                 options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
             )
-            select.callback = self._make_pos_callback(pos_name)
+            select.callback = self._make_pos_callback(pos_name, select)
             self.add_item(select)
 
-        reply_select = discord.ui.Select(
+        self.reply_select = discord.ui.Select(
             placeholder="Who gives the Opp Reply speech?",
             options=[discord.SelectOption(label=o.label, value=o.value) for o in member_options],
         )
-        reply_select.callback = self._reply_callback
-        self.add_item(reply_select)
+        self.reply_select.callback = self._reply_callback
+        self.add_item(self.reply_select)
 
         self.next_btn = discord.ui.Button(
             label="Continue to Scores", style=discord.ButtonStyle.primary
@@ -429,14 +443,24 @@ class OppAssignmentView(discord.ui.View):
         self.next_btn.callback = self._next_callback
         self.add_item(self.next_btn)
 
-    def _make_pos_callback(self, pos_name: str):
+    def _make_pos_callback(self, pos_name: str, select: discord.ui.Select):
         async def callback(interaction: discord.Interaction):
-            self.assignments[pos_name] = interaction.data["values"][0]
+            selected_id = interaction.data["values"][0]
+            self.assignments[pos_name] = selected_id
+            for option in select.options:
+                option.default = (option.value == selected_id)
+            selected_label = next(o.label for o in select.options if o.value == selected_id)
+            select.placeholder = f"{pos_name}: {selected_label}"
             await interaction.response.edit_message(view=self)
         return callback
 
     async def _reply_callback(self, interaction: discord.Interaction):
-        self.reply_member_id = interaction.data["values"][0]
+        selected_id = interaction.data["values"][0]
+        self.reply_member_id = selected_id
+        for option in self.reply_select.options:
+            option.default = (option.value == selected_id)
+        selected_label = next(o.label for o in self.reply_select.options if o.value == selected_id)
+        self.reply_select.placeholder = f"Opp Reply: {selected_label}"
         await interaction.response.edit_message(view=self)
 
     async def _next_callback(self, interaction: discord.Interaction):
