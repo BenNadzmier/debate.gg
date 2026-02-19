@@ -524,6 +524,22 @@ class EmbedBuilder:
         return embed
 
     @staticmethod
+    def create_round_confirmed_dm_embed(debate_round) -> discord.Embed:
+        """Create a DM embed sent to all participants when round channels are ready."""
+        embed = discord.Embed(
+            title=f"Round {debate_round.round_id} — Your Room Is Ready!",
+            description=(
+                f"Your debate round has been confirmed and channels have been created.\n\n"
+                f"**Format:** {debate_round.format_label}\n"
+                f"**Text Channel:** <#{debate_round.channel_ids['text']}>\n\n"
+                "Click the button below to jump to your debate room."
+            ),
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+        embed.set_footer(text="DMs must stay enabled to receive prep and ballot notifications.")
+        return embed
+
+    @staticmethod
     def create_welcome_dm_embed(guild_name: str) -> discord.Embed:
         """Create a welcome DM embed for new server members."""
         embed = discord.Embed(

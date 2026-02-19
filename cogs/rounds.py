@@ -946,33 +946,6 @@ class ChairJudgeControlView(discord.ui.View):
         prep_embed = EmbedBuilder.create_prep_started_embed(self.debate_round, end_timestamp)
         await text_channel.send(embed=prep_embed)
 
-        # Auto-move participants to their prep/judge VCs
-        guild = interaction.guild
-        gov_prep_vc = guild.get_channel(self.debate_round.channel_ids["gov_prep"])
-        opp_prep_vc = guild.get_channel(self.debate_round.channel_ids["opp_prep"])
-        judges_vc = guild.get_channel(self.debate_round.channel_ids["judges"])
-
-        for member in self.debate_round.government.members:
-            try:
-                if member.voice:
-                    await member.move_to(gov_prep_vc)
-            except Exception:
-                pass
-
-        for member in self.debate_round.opposition.members:
-            try:
-                if member.voice:
-                    await member.move_to(opp_prep_vc)
-            except Exception:
-                pass
-
-        for member in self.debate_round.judges.get_all_judges():
-            try:
-                if member.voice:
-                    await member.move_to(judges_vc)
-            except Exception:
-                pass
-
         # DM debaters with motion, side, and prep end time
         await self.rounds_cog.send_prep_dms(self.debate_round, end_timestamp)
 
@@ -1140,6 +1113,9 @@ class Rounds(commands.Cog):
             chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
             chair_view.message = await text_channel.send(embed=chair_embed, view=chair_view)
 
+            await self.send_round_confirmed_dms(debate_round)
+            await self.move_to_prep_channels(guild, debate_round)
+
             logger.info(f"Created channels for round {round_id} in category {category.name}")
 
         except discord.Forbidden:
@@ -1155,6 +1131,53 @@ class Rounds(commands.Cog):
                 )
         except Exception as e:
             logger.error(f"Error creating round channels: {e}", exc_info=True)
+
+    async def move_to_prep_channels(self, guild: discord.Guild, debate_round: DebateRound):
+        """Move all participants to their assigned prep/judge VCs."""
+        gov_prep_vc = guild.get_channel(debate_round.channel_ids["gov_prep"])
+        opp_prep_vc = guild.get_channel(debate_round.channel_ids["opp_prep"])
+        judges_vc = guild.get_channel(debate_round.channel_ids["judges"])
+
+        for member in debate_round.government.members:
+            try:
+                if member.voice:
+                    await member.move_to(gov_prep_vc)
+            except Exception:
+                pass
+
+        for member in debate_round.opposition.members:
+            try:
+                if member.voice:
+                    await member.move_to(opp_prep_vc)
+            except Exception:
+                pass
+
+        for member in debate_round.judges.get_all_judges():
+            try:
+                if member.voice:
+                    await member.move_to(judges_vc)
+            except Exception:
+                pass
+
+    async def send_round_confirmed_dms(self, debate_round: DebateRound):
+        """DM all participants (debaters + judges) with the debate room link."""
+        text_channel_id = debate_round.channel_ids["text"]
+        channel_url = f"https://discord.com/channels/{Config.GUILD_ID}/{text_channel_id}"
+
+        embed = EmbedBuilder.create_round_confirmed_dm_embed(debate_round)
+
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.link,
+            label="Go to Debate Room",
+            url=channel_url
+        ))
+
+        for member in debate_round.get_all_participants():
+            try:
+                await member.send(embed=embed, view=view)
+            except discord.Forbidden:
+                pass
 
     async def send_prep_dms(self, debate_round: DebateRound, end_timestamp: int):
         """DM each debater with their side, the motion, and prep end time."""
