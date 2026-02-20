@@ -717,9 +717,12 @@ class ChannelDeletionConfirmView(discord.ui.View):
         matchmaking_cog = self.rounds_cog.bot.get_cog("Matchmaking")
         debate_round = matchmaking_cog.active_rounds.get(self.round_id) if matchmaking_cog else None
 
-        # Cancel prep timer if still running
-        if debate_round and hasattr(debate_round, '_prep_task') and debate_round._prep_task:
-            debate_round._prep_task.cancel()
+        # Cancel prep/veto timers if still running
+        if debate_round:
+            if hasattr(debate_round, '_prep_task') and debate_round._prep_task:
+                debate_round._prep_task.cancel()
+            if hasattr(debate_round, '_veto_task') and debate_round._veto_task:
+                debate_round._veto_task.cancel()
 
         # Delete channels and category
         await self.rounds_cog.delete_round_channels(interaction.guild, self.round_id)
@@ -876,6 +879,277 @@ class MotionInputModal(discord.ui.Modal):
         await interaction.response.edit_message(embed=chair_embed, view=self.chair_view)
 
 
+class APMotionInputModal(discord.ui.Modal):
+    """Modal for entering 3 AP motions + optional shared infoslide."""
+
+    def __init__(self, chair_view):
+        super().__init__(title="Enter AP Motions")
+        self.chair_view = chair_view
+
+        self.motion1 = discord.ui.InputText(
+            label="Motion 1",
+            style=discord.InputTextStyle.long,
+            required=True
+        )
+        self.motion2 = discord.ui.InputText(
+            label="Motion 2",
+            style=discord.InputTextStyle.long,
+            required=True
+        )
+        self.motion3 = discord.ui.InputText(
+            label="Motion 3",
+            style=discord.InputTextStyle.long,
+            required=True
+        )
+        self.infoslide_input = discord.ui.InputText(
+            label="Infoslide (Optional)",
+            placeholder="Enter context/background information for the motions...",
+            style=discord.InputTextStyle.long,
+            required=False
+        )
+        self.add_item(self.motion1)
+        self.add_item(self.motion2)
+        self.add_item(self.motion3)
+        self.add_item(self.infoslide_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        motions = [
+            self.motion1.value.strip(),
+            self.motion2.value.strip(),
+            self.motion3.value.strip()
+        ]
+        if not all(motions):
+            await interaction.response.send_message(
+                "All 3 motions are required.", ephemeral=True
+            )
+            return
+
+        debate_round = self.chair_view.debate_round
+        debate_round.motions = motions
+        infoslide_val = self.infoslide_input.value.strip() if self.infoslide_input.value else None
+        debate_round.infoslide = infoslide_val or None
+
+        # Switch chair control to "waiting for veto" state
+        self.chair_view.set_waiting_for_veto()
+        chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
+        await interaction.response.edit_message(embed=chair_embed, view=self.chair_view)
+
+        # Release motions to teams and start veto process
+        await self.chair_view.rounds_cog.release_motions(debate_round, interaction.guild)
+
+
+class VetoView(discord.ui.View):
+    """View posted in text channel with Gov and Opp veto submission buttons."""
+
+    def __init__(self, debate_round: DebateRound, rounds_cog):
+        super().__init__(timeout=None)
+        self.debate_round = debate_round
+        self.rounds_cog = rounds_cog
+        self.message: Optional[discord.Message] = None
+
+        self.gov_btn = discord.ui.Button(
+            label="Gov: Submit Veto",
+            style=discord.ButtonStyle.primary
+        )
+        self.opp_btn = discord.ui.Button(
+            label="Opp: Submit Veto",
+            style=discord.ButtonStyle.danger
+        )
+        self.gov_btn.callback = self._gov_callback
+        self.opp_btn.callback = self._opp_callback
+        self.add_item(self.gov_btn)
+        self.add_item(self.opp_btn)
+
+    async def _gov_callback(self, interaction: discord.Interaction):
+        if interaction.user not in self.debate_round.government.members:
+            await interaction.response.send_message(
+                "Only Government members can submit the Gov veto.", ephemeral=True
+            )
+            return
+        if self.debate_round.gov_veto is not None:
+            await interaction.response.send_message(
+                "Your team has already submitted their veto.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(
+            VetoModal('gov', self.debate_round, self, self.rounds_cog)
+        )
+
+    async def _opp_callback(self, interaction: discord.Interaction):
+        if interaction.user not in self.debate_round.opposition.members:
+            await interaction.response.send_message(
+                "Only Opposition members can submit the Opp veto.", ephemeral=True
+            )
+            return
+        if self.debate_round.opp_veto is not None:
+            await interaction.response.send_message(
+                "Your team has already submitted their veto.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(
+            VetoModal('opp', self.debate_round, self, self.rounds_cog)
+        )
+
+
+class VetoModal(discord.ui.Modal):
+    """Modal for a team to rank the 3 motions (1 = most favored, 3 = least)."""
+
+    def __init__(self, team: str, debate_round: DebateRound, veto_view: VetoView, rounds_cog):
+        team_label = "Government" if team == "gov" else "Opposition"
+        super().__init__(title=f"Submit {team_label} Veto")
+        self.team = team
+        self.debate_round = debate_round
+        self.veto_view = veto_view
+        self.rounds_cog = rounds_cog
+
+        self.rank_inputs = []
+        for i in range(3):
+            inp = discord.ui.InputText(
+                label=f"Motion {i + 1} — Rank (1 = best, 3 = worst)",
+                placeholder="Type 1, 2, or 3",
+                max_length=1,
+                required=True
+            )
+            self.add_item(inp)
+            self.rank_inputs.append(inp)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Parse ranks
+        try:
+            ranks = [int(inp.value.strip()) for inp in self.rank_inputs]
+        except ValueError:
+            await interaction.response.send_message(
+                "Ranks must be numbers (1, 2, or 3).", ephemeral=True
+            )
+            return
+
+        if set(ranks) != {1, 2, 3}:
+            await interaction.response.send_message(
+                "You must assign each rank exactly once: one motion ranked 1, one 2, one 3.",
+                ephemeral=True
+            )
+            return
+
+        # Guard against race condition (two members submit simultaneously)
+        if self.team == 'gov':
+            if self.debate_round.gov_veto is not None:
+                await interaction.response.send_message(
+                    "Your team already submitted!", ephemeral=True
+                )
+                return
+            self.debate_round.gov_veto = ranks
+            self.veto_view.gov_btn.label = "Gov: Submitted ✓"
+            self.veto_view.gov_btn.disabled = True
+        else:
+            if self.debate_round.opp_veto is not None:
+                await interaction.response.send_message(
+                    "Your team already submitted!", ephemeral=True
+                )
+                return
+            self.debate_round.opp_veto = ranks
+            self.veto_view.opp_btn.label = "Opp: Submitted ✓"
+            self.veto_view.opp_btn.disabled = True
+
+        await interaction.response.send_message(
+            "Your veto has been submitted!", ephemeral=True
+        )
+
+        # Update the public veto message to show the submitted state
+        try:
+            await self.veto_view.message.edit(view=self.veto_view)
+        except Exception:
+            pass
+
+        # If both teams have now submitted, cancel timer and resolve
+        if self.debate_round.gov_veto is not None and self.debate_round.opp_veto is not None:
+            if hasattr(self.debate_round, '_veto_task') and self.debate_round._veto_task:
+                self.debate_round._veto_task.cancel()
+            await self.rounds_cog.process_veto(self.debate_round, interaction.guild)
+
+
+class CoinTossView(discord.ui.View):
+    """View posted in text channel for the coin toss tie-breaker."""
+
+    def __init__(self, debate_round: DebateRound, rounds_cog, tied_indices: list,
+                 gov_preferred_idx: int, opp_preferred_idx: int):
+        super().__init__(timeout=120)
+        self.debate_round = debate_round
+        self.rounds_cog = rounds_cog
+        self.tied_indices = tied_indices
+        self.gov_preferred_idx = gov_preferred_idx
+        self.opp_preferred_idx = opp_preferred_idx
+        self.gov_call: Optional[str] = None
+        self.opp_call: Optional[str] = None
+        self.message: Optional[discord.Message] = None
+
+        self.gov_heads = discord.ui.Button(label="Gov: Heads", style=discord.ButtonStyle.primary, row=0)
+        self.gov_tails = discord.ui.Button(label="Gov: Tails", style=discord.ButtonStyle.primary, row=0)
+        self.opp_heads = discord.ui.Button(label="Opp: Heads", style=discord.ButtonStyle.danger, row=1)
+        self.opp_tails = discord.ui.Button(label="Opp: Tails", style=discord.ButtonStyle.danger, row=1)
+
+        self.gov_heads.callback = self._make_call_callback('gov', 'heads')
+        self.gov_tails.callback = self._make_call_callback('gov', 'tails')
+        self.opp_heads.callback = self._make_call_callback('opp', 'heads')
+        self.opp_tails.callback = self._make_call_callback('opp', 'tails')
+
+        self.add_item(self.gov_heads)
+        self.add_item(self.gov_tails)
+        self.add_item(self.opp_heads)
+        self.add_item(self.opp_tails)
+
+    def _make_call_callback(self, team: str, call: str):
+        async def callback(interaction: discord.Interaction):
+            gov_members = self.debate_round.government.members
+            opp_members = self.debate_round.opposition.members
+
+            if team == 'gov':
+                if interaction.user not in gov_members:
+                    await interaction.response.send_message(
+                        "Only Government members can call for Gov.", ephemeral=True
+                    )
+                    return
+                if self.gov_call:
+                    await interaction.response.send_message(
+                        "Government has already called!", ephemeral=True
+                    )
+                    return
+                self.gov_call = call
+                self.gov_heads.disabled = True
+                self.gov_tails.disabled = True
+            else:
+                if interaction.user not in opp_members:
+                    await interaction.response.send_message(
+                        "Only Opposition members can call for Opp.", ephemeral=True
+                    )
+                    return
+                if self.opp_call:
+                    await interaction.response.send_message(
+                        "Opposition has already called!", ephemeral=True
+                    )
+                    return
+                self.opp_call = call
+                self.opp_heads.disabled = True
+                self.opp_tails.disabled = True
+
+            await interaction.response.edit_message(view=self)
+
+            if self.gov_call and self.opp_call:
+                await self.rounds_cog.flip_coin(
+                    self.debate_round, interaction.guild, self, interaction.message
+                )
+        return callback
+
+    async def on_timeout(self):
+        """Auto-resolve with random motion if teams don't call within 2 minutes."""
+        import random
+        motion_index = random.choice(self.tied_indices)
+        guild = self.rounds_cog.bot.get_guild(Config.GUILD_ID)
+        if guild:
+            await self.rounds_cog.resolve_veto_result(
+                self.debate_round, guild, motion_index, reason="timeout"
+            )
+
+
 class ChairJudgeControlView(discord.ui.View):
     """View for chair judge to control the round (enter motion, start prep)."""
 
@@ -891,13 +1165,21 @@ class ChairJudgeControlView(discord.ui.View):
         self._setup_enter_motion()
 
     def _setup_enter_motion(self):
-        """Show the Enter Motion button."""
+        """Show the Enter Motion(s) button."""
+        self.clear_items()
+        label = "Enter Motions" if self.debate_round.format_label == "AP" else "Enter Motion"
+        btn = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+        btn.callback = self._enter_motion_callback
+        self.add_item(btn)
+
+    def set_waiting_for_veto(self):
+        """Replace buttons with a disabled waiting indicator during veto."""
         self.clear_items()
         btn = discord.ui.Button(
-            label="Enter Motion",
-            style=discord.ButtonStyle.primary
+            label="Veto In Progress...",
+            style=discord.ButtonStyle.secondary,
+            disabled=True
         )
-        btn.callback = self._enter_motion_callback
         self.add_item(btn)
 
     def show_start_prep(self):
@@ -911,14 +1193,17 @@ class ChairJudgeControlView(discord.ui.View):
         self.add_item(btn)
 
     async def _enter_motion_callback(self, interaction: discord.Interaction):
-        """Handle Enter Motion button click."""
+        """Handle Enter Motion(s) button click."""
         if interaction.user.id != self.chair_id:
             await interaction.response.send_message(
                 "Only the chair judge can enter the motion.", ephemeral=True
             )
             return
 
-        modal = MotionInputModal(self)
+        if self.debate_round.format_label == "AP":
+            modal = APMotionInputModal(self)
+        else:
+            modal = MotionInputModal(self)
         await interaction.response.send_modal(modal)
 
     async def _start_prep_callback(self, interaction: discord.Interaction):
@@ -971,6 +1256,8 @@ class Rounds(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self._chair_views: dict = {}   # round_id → ChairJudgeControlView
+        self._veto_views: dict = {}    # round_id → VetoView
 
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -1122,6 +1409,7 @@ class Rounds(commands.Cog):
             chair_view = ChairJudgeControlView(self, debate_round, round_info_message)
             chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
             chair_view.message = await text_channel.send(embed=chair_embed, view=chair_view)
+            self._chair_views[debate_round.round_id] = chair_view
 
             await self.send_round_confirmed_dms(debate_round)
             await self.move_to_prep_channels(guild, debate_round)
@@ -1187,6 +1475,162 @@ class Rounds(commands.Cog):
             try:
                 await member.send(embed=embed, view=view)
             except discord.Forbidden:
+                pass
+
+    async def release_motions(self, debate_round: DebateRound, guild: discord.Guild):
+        """Post motions to text channel, create veto view, and start 5-minute veto timer."""
+        text_channel = guild.get_channel(debate_round.channel_ids['text'])
+        end_timestamp = int(time.time()) + 300
+
+        # Post motions released embed
+        motions_embed = EmbedBuilder.create_motions_released_embed(debate_round, end_timestamp)
+        await text_channel.send(embed=motions_embed)
+
+        # Post veto buttons
+        veto_view = VetoView(debate_round, self)
+        veto_embed = EmbedBuilder.create_veto_prompt_embed(debate_round)
+        veto_view.message = await text_channel.send(embed=veto_embed, view=veto_view)
+        self._veto_views[debate_round.round_id] = veto_view
+
+        # Update round info embed to reflect veto-in-progress state
+        chair_view = self._chair_views.get(debate_round.round_id)
+        if chair_view and chair_view.round_info_message:
+            try:
+                await chair_view.round_info_message.edit(
+                    embed=EmbedBuilder.create_round_text_channel_embed(debate_round)
+                )
+            except Exception:
+                pass
+
+        # Start 5-minute veto timer
+        task = self.bot.loop.create_task(self.run_veto_timer(debate_round, guild))
+        debate_round._veto_task = task
+
+    async def run_veto_timer(self, debate_round: DebateRound, guild: discord.Guild):
+        """5-minute background task; auto-resolves veto if teams don't submit in time."""
+        try:
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            return  # Both teams submitted; process_veto already called
+
+        import random
+        text_channel = guild.get_channel(debate_round.channel_ids['text'])
+
+        if debate_round.gov_veto is None and debate_round.opp_veto is None:
+            # Neither submitted → random pick
+            motion_index = random.randrange(len(debate_round.motions))
+            if text_channel:
+                await text_channel.send(embed=EmbedBuilder.create_veto_timeout_embed("both"))
+            await self.resolve_veto_result(debate_round, guild, motion_index)
+        elif debate_round.gov_veto is None:
+            # Only Opp submitted → Opp's rank-1 motion wins
+            motion_index = debate_round.opp_veto.index(1)
+            if text_channel:
+                await text_channel.send(embed=EmbedBuilder.create_veto_timeout_embed("gov"))
+            await self.resolve_veto_result(debate_round, guild, motion_index)
+        elif debate_round.opp_veto is None:
+            # Only Gov submitted → Gov's rank-1 motion wins
+            motion_index = debate_round.gov_veto.index(1)
+            if text_channel:
+                await text_channel.send(embed=EmbedBuilder.create_veto_timeout_embed("opp"))
+            await self.resolve_veto_result(debate_round, guild, motion_index)
+        # else: both submitted already — process_veto was already called
+
+    async def process_veto(self, debate_round: DebateRound, guild: discord.Guild):
+        """Determine the debated motion from both teams' veto rankings."""
+        gov_veto = debate_round.gov_veto
+        opp_veto = debate_round.opp_veto
+        n = len(debate_round.motions)
+
+        # Non-vetoed: neither team ranked this motion as 3 (least favored)
+        non_vetoed = [i for i in range(n) if gov_veto[i] != 3 and opp_veto[i] != 3]
+
+        if len(non_vetoed) == 1:
+            # Clear winner
+            await self.resolve_veto_result(debate_round, guild, non_vetoed[0])
+        elif len(non_vetoed) >= 2:
+            # Tie: both teams vetoed the same motion
+            gov_preferred = min(non_vetoed, key=lambda i: gov_veto[i])
+            opp_preferred = min(non_vetoed, key=lambda i: opp_veto[i])
+            if gov_preferred == opp_preferred:
+                # Both teams prefer the same tied motion — no coin toss needed
+                await self.resolve_veto_result(debate_round, guild, gov_preferred)
+            else:
+                await self.start_coin_toss(debate_round, guild, non_vetoed, gov_preferred, opp_preferred)
+        else:
+            # Fallback (mathematically shouldn't occur): pick lowest combined rank sum
+            sums = [gov_veto[i] + opp_veto[i] for i in range(n)]
+            await self.resolve_veto_result(debate_round, guild, sums.index(min(sums)))
+
+    async def start_coin_toss(self, debate_round: DebateRound, guild: discord.Guild,
+                               tied_indices: list, gov_preferred: int, opp_preferred: int):
+        """Post coin toss view in text channel."""
+        text_channel = guild.get_channel(debate_round.channel_ids['text'])
+        coin_embed = EmbedBuilder.create_coin_toss_embed(
+            debate_round, tied_indices, gov_preferred, opp_preferred
+        )
+        view = CoinTossView(debate_round, self, tied_indices, gov_preferred, opp_preferred)
+        view.message = await text_channel.send(embed=coin_embed, view=view)
+
+    async def flip_coin(self, debate_round: DebateRound, guild: discord.Guild,
+                        view: CoinTossView, message: discord.Message):
+        """Flip the coin and resolve the veto based on the result."""
+        import random
+        result = random.choice(['heads', 'tails'])
+        winner_team = 'Government' if view.gov_call == result else 'Opposition'
+        motion_index = view.gov_preferred_idx if view.gov_call == result else view.opp_preferred_idx
+
+        result_embed = EmbedBuilder.create_coin_toss_result_embed(
+            debate_round, result, winner_team, view.gov_call, view.opp_call
+        )
+        try:
+            await message.edit(embed=result_embed, view=None)
+        except Exception:
+            pass
+        await self.resolve_veto_result(debate_round, guild, motion_index, reason="coin_toss")
+
+    async def resolve_veto_result(self, debate_round: DebateRound, guild: discord.Guild,
+                                   motion_index: int, reason: str = "veto"):
+        """Set the final motion, post results, and re-enable chair controls."""
+        debate_round.motion = debate_round.motions[motion_index]
+        debate_round.debated_motion_index = motion_index
+
+        text_channel = guild.get_channel(debate_round.channel_ids['text'])
+
+        # Post veto results embed (skip if coin toss already announced the winner)
+        if reason != "coin_toss" and text_channel:
+            result_embed = EmbedBuilder.create_veto_results_embed(debate_round)
+            await text_channel.send(embed=result_embed)
+
+        # Update round info embed (now shows the single resolved motion)
+        chair_view = self._chair_views.get(debate_round.round_id)
+        if chair_view and chair_view.round_info_message:
+            try:
+                await chair_view.round_info_message.edit(
+                    embed=EmbedBuilder.create_round_text_channel_embed(debate_round)
+                )
+            except Exception:
+                pass
+
+        # Show "Start Prep" button on chair control
+        if chair_view and chair_view.message:
+            chair_view.show_start_prep()
+            try:
+                await chair_view.message.edit(
+                    embed=EmbedBuilder.create_chair_control_embed(debate_round),
+                    view=chair_view
+                )
+            except Exception:
+                pass
+
+        # Disable veto view buttons if still visible
+        veto_view = self._veto_views.pop(debate_round.round_id, None)
+        if veto_view and veto_view.message:
+            for child in veto_view.children:
+                child.disabled = True
+            try:
+                await veto_view.message.edit(view=veto_view)
+            except Exception:
                 pass
 
     async def send_prep_dms(self, debate_round: DebateRound, end_timestamp: int):

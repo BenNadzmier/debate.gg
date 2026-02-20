@@ -224,6 +224,10 @@ class DebateRound:
     judges: JudgePanel
     motion: Optional[str] = None
     infoslide: Optional[str] = None
+    motions: List[str] = field(default_factory=list)        # AP: the 3 entered motions (pre-veto)
+    gov_veto: Optional[List[int]] = None                    # [rank_m0, rank_m1, rank_m2] 1=best, 3=worst
+    opp_veto: Optional[List[int]] = None
+    debated_motion_index: Optional[int] = None              # index into motions; set after veto resolves
     confirmed: bool = False
     format_label: Optional[str] = None
     category_id: Optional[int] = None

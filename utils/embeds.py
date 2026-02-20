@@ -248,6 +248,13 @@ class EmbedBuilder:
             if debate_round.infoslide:
                 desc += f"\n\n**Infoslide:**\n{debate_round.infoslide}"
             embed.description = desc
+        elif debate_round.motions:
+            # AP: motions released, veto in progress
+            lines = [f"**Motion {i+1}:** {m}" for i, m in enumerate(debate_round.motions)]
+            desc = "\n".join(lines) + "\n\n*Veto in progress — waiting for team rankings...*"
+            if debate_round.infoslide:
+                desc = f"**Infoslide:**\n{debate_round.infoslide}\n\n" + desc
+            embed.description = desc
         else:
             embed.description = "*Waiting for chair judge to enter the motion...*"
 
@@ -283,16 +290,16 @@ class EmbedBuilder:
     @staticmethod
     def create_chair_control_embed(debate_round) -> discord.Embed:
         """Create embed for the chair judge control panel."""
-        if not debate_round.motion:
-            return discord.Embed(
-                title="Chair Judge Controls",
-                description=(
-                    f"**Chair:** {debate_round.judges.chair.mention}\n\n"
-                    "Enter the debate motion to get started."
-                ),
-                color=EmbedBuilder.COLOR_PRIMARY
-            )
-        else:
+        if debate_round.motions and not debate_round.motion:
+            # AP: motions released, veto in progress
+            lines = [f"**Motion {i+1}:** {m}" for i, m in enumerate(debate_round.motions)]
+            desc = f"**Chair:** {debate_round.judges.chair.mention}\n\n"
+            desc += "\n".join(lines)
+            if debate_round.infoslide:
+                desc += f"\n\n**Infoslide:**\n{debate_round.infoslide}"
+            desc += "\n\n*Waiting for teams to submit their veto rankings...*"
+        elif debate_round.motion:
+            # Motion resolved (1v1 single motion or post-veto AP)
             desc = (
                 f"**Chair:** {debate_round.judges.chair.mention}\n"
                 f"**Motion:** {debate_round.motion}\n\n"
@@ -300,11 +307,15 @@ class EmbedBuilder:
             if debate_round.infoslide:
                 desc += f"**Infoslide:**\n{debate_round.infoslide}\n\n"
             desc += "Start prep time when all participants are ready."
-            return discord.Embed(
-                title="Chair Judge Controls",
-                description=desc,
-                color=EmbedBuilder.COLOR_PRIMARY
-            )
+        else:
+            # No motions entered yet
+            label = "Enter the motions" if debate_round.format_label == "AP" else "Enter the debate motion"
+            desc = f"**Chair:** {debate_round.judges.chair.mention}\n\n{label} to get started."
+        return discord.Embed(
+            title="Chair Judge Controls",
+            description=desc,
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
 
     @staticmethod
     def create_prep_started_embed(debate_round, end_timestamp: int) -> discord.Embed:
@@ -596,3 +607,108 @@ class EmbedBuilder:
 
         embed.set_footer(text="DMs must be enabled to receive round notifications.")
         return embed
+
+    @staticmethod
+    def create_motions_released_embed(debate_round, end_timestamp: int) -> discord.Embed:
+        """Create embed posted in text channel when chair releases 3 AP motions."""
+        lines = [f"**Motion {i+1}:** {m}" for i, m in enumerate(debate_round.motions)]
+        desc = "\n".join(lines)
+        if debate_round.infoslide:
+            desc = f"**Infoslide:**\n{debate_round.infoslide}\n\n" + desc
+        desc += (
+            f"\n\nBoth teams have **5 minutes** to submit their motion rankings.\n"
+            f"Veto closes <t:{end_timestamp}:R>"
+        )
+        return discord.Embed(
+            title=f"Round {debate_round.round_id} — Motions Released",
+            description=desc,
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
+    def create_veto_prompt_embed(debate_round) -> discord.Embed:
+        """Create embed displayed above the veto buttons in the text channel."""
+        return discord.Embed(
+            title="Submit Your Team's Veto",
+            description=(
+                "Click your team's button to submit your motion rankings.\n"
+                "Rank **1** = most favored · **3** = least favored.\n"
+                "Each rank must be used exactly once. "
+                "Rankings are revealed only after both teams submit."
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
+    def create_veto_timeout_embed(timed_out_team: str) -> discord.Embed:
+        """Create embed posted when a team's veto timer expires."""
+        if timed_out_team == "both":
+            desc = "Neither team submitted their veto in time. A motion will be selected at random."
+        elif timed_out_team == "gov":
+            desc = "Government did not submit their veto in time. Opposition's preferred motion will be debated."
+        else:
+            desc = "Opposition did not submit their veto in time. Government's preferred motion will be debated."
+        return discord.Embed(
+            title="⏰ Veto Timeout",
+            description=desc,
+            color=EmbedBuilder.COLOR_DANGER
+        )
+
+    @staticmethod
+    def create_veto_results_embed(debate_round) -> discord.Embed:
+        """Create embed revealing both teams' rankings and the selected motion."""
+        gov_veto = debate_round.gov_veto
+        opp_veto = debate_round.opp_veto
+        selected = debate_round.debated_motion_index
+
+        lines = []
+        for i, motion in enumerate(debate_round.motions):
+            g = gov_veto[i] if gov_veto else "—"
+            o = opp_veto[i] if opp_veto else "—"
+            marker = "✓" if i == selected else "✗"
+            lines.append(f"**Motion {i+1}** {marker} — Gov: {g} | Opp: {o}\n> {motion}")
+
+        embed = discord.Embed(
+            title=f"Round {debate_round.round_id} — Veto Results",
+            description="\n\n".join(lines),
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+        embed.add_field(
+            name="Motion to be Debated",
+            value=debate_round.motion,
+            inline=False
+        )
+        return embed
+
+    @staticmethod
+    def create_coin_toss_embed(debate_round, tied_indices: list, gov_preferred_idx: int, opp_preferred_idx: int) -> discord.Embed:
+        """Create embed for the coin toss phase when a tie occurs."""
+        motions = debate_round.motions
+        tied_list = "\n".join(f"• Motion {i+1}: {motions[i]}" for i in tied_indices)
+        desc = (
+            f"Both teams vetoed the same motion. A coin toss will decide between:\n{tied_list}\n\n"
+            f"**Government prefers:** Motion {gov_preferred_idx + 1}\n"
+            f"**Opposition prefers:** Motion {opp_preferred_idx + 1}\n\n"
+            "Each team calls heads or tails. The team whose call matches the coin result "
+            "gets their preferred motion debated. You have **2 minutes** to call."
+        )
+        return discord.Embed(
+            title=f"Round {debate_round.round_id} — Coin Toss",
+            description=desc,
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
+    def create_coin_toss_result_embed(debate_round, result: str, winner_team: str, gov_call: str, opp_call: str) -> discord.Embed:
+        """Create embed showing the coin toss result and selected motion."""
+        desc = (
+            f"Gov called: **{gov_call.capitalize()}** | Opp called: **{opp_call.capitalize()}**\n"
+            f"Coin landed: **{result.capitalize()}**\n\n"
+            f"**{winner_team} wins the toss!** Their preferred motion will be debated.\n\n"
+            f"**Motion:** {debate_round.motion}"
+        )
+        return discord.Embed(
+            title=f"Round {debate_round.round_id} — Coin Toss Result",
+            description=desc,
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
