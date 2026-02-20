@@ -244,7 +244,10 @@ class EmbedBuilder:
         )
 
         if debate_round.motion:
-            embed.description = f"**Motion:** {debate_round.motion}"
+            desc = f"**Motion:** {debate_round.motion}"
+            if debate_round.infoslide:
+                desc += f"\n\n**Infoslide:**\n{debate_round.infoslide}"
+            embed.description = desc
         else:
             embed.description = "*Waiting for chair judge to enter the motion...*"
 
@@ -290,13 +293,16 @@ class EmbedBuilder:
                 color=EmbedBuilder.COLOR_PRIMARY
             )
         else:
+            desc = (
+                f"**Chair:** {debate_round.judges.chair.mention}\n"
+                f"**Motion:** {debate_round.motion}\n\n"
+            )
+            if debate_round.infoslide:
+                desc += f"**Infoslide:**\n{debate_round.infoslide}\n\n"
+            desc += "Start prep time when all participants are ready."
             return discord.Embed(
                 title="Chair Judge Controls",
-                description=(
-                    f"**Chair:** {debate_round.judges.chair.mention}\n"
-                    f"**Motion:** {debate_round.motion}\n\n"
-                    "Start prep time when all participants are ready."
-                ),
+                description=desc,
                 color=EmbedBuilder.COLOR_PRIMARY
             )
 
@@ -343,14 +349,16 @@ class EmbedBuilder:
     def create_prep_dm_embed(debate_round, side: str, end_timestamp: int) -> discord.Embed:
         """Create a DM embed sent to debaters when prep starts."""
         prep_minutes = 15 if debate_round.round_type == RoundType.PM_LO else 30
+        desc = f"**Side:** {side}\n**Motion:** {debate_round.motion}\n"
+        if debate_round.infoslide:
+            desc += f"\n**Infoslide:**\n{debate_round.infoslide}\n"
+        desc += (
+            f"\nYou have **{prep_minutes} minutes** to prepare.\n"
+            f"Prep ends <t:{end_timestamp}:R> (<t:{end_timestamp}:T>)"
+        )
         return discord.Embed(
             title=f"Round {debate_round.round_id} — Prep Time",
-            description=(
-                f"**Side:** {side}\n"
-                f"**Motion:** {debate_round.motion}\n\n"
-                f"You have **{prep_minutes} minutes** to prepare.\n"
-                f"Prep ends <t:{end_timestamp}:R> (<t:{end_timestamp}:T>)"
-            ),
+            description=desc,
             color=EmbedBuilder.COLOR_PRIMARY
         )
 

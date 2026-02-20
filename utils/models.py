@@ -223,6 +223,7 @@ class DebateRound:
     opposition: DebateTeam
     judges: JudgePanel
     motion: Optional[str] = None
+    infoslide: Optional[str] = None
     confirmed: bool = False
     format_label: Optional[str] = None
     category_id: Optional[int] = None

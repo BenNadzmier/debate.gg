@@ -841,6 +841,14 @@ class MotionInputModal(discord.ui.Modal):
         )
         self.add_item(self.motion_input)
 
+        self.infoslide_input = discord.ui.InputText(
+            label="Infoslide (Optional)",
+            placeholder="Enter context/background information for the motion...",
+            style=discord.InputTextStyle.long,
+            required=False
+        )
+        self.add_item(self.infoslide_input)
+
     async def callback(self, interaction: discord.Interaction):
         motion = self.motion_input.value.strip()
         if not motion:
@@ -851,6 +859,8 @@ class MotionInputModal(discord.ui.Modal):
 
         debate_round = self.chair_view.debate_round
         debate_round.motion = motion
+        infoslide = self.infoslide_input.value.strip() if self.infoslide_input.value else None
+        debate_round.infoslide = infoslide or None
 
         # Update round info embed with the motion
         if self.chair_view.round_info_message:
