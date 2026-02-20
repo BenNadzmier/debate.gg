@@ -225,6 +225,7 @@ class DebateRound:
     motion: Optional[str] = None
     infoslide: Optional[str] = None
     motions: List[str] = field(default_factory=list)        # AP: the 3 entered motions (pre-veto)
+    motion_infoslides: List[Optional[str]] = field(default_factory=list)  # AP: per-motion infoslides
     gov_veto: Optional[List[int]] = None                    # [rank_m0, rank_m1, rank_m2] 1=best, 3=worst
     opp_veto: Optional[List[int]] = None
     debated_motion_index: Optional[int] = None              # index into motions; set after veto resolves

@@ -250,11 +250,13 @@ class EmbedBuilder:
             embed.description = desc
         elif debate_round.motions:
             # AP: motions released, veto in progress
-            lines = [f"**Motion {i+1}:** {m}" for i, m in enumerate(debate_round.motions)]
-            desc = "\n".join(lines) + "\n\n*Veto in progress — waiting for team rankings...*"
-            if debate_round.infoslide:
-                desc = f"**Infoslide:**\n{debate_round.infoslide}\n\n" + desc
-            embed.description = desc
+            lines = []
+            for i, m in enumerate(debate_round.motions):
+                line = f"**Motion {i+1}:** {m}"
+                if debate_round.motion_infoslides and debate_round.motion_infoslides[i]:
+                    line += f"\n> *Infoslide:* {debate_round.motion_infoslides[i]}"
+                lines.append(line)
+            embed.description = "\n\n".join(lines) + "\n\n*Veto in progress — waiting for team rankings...*"
         else:
             embed.description = "*Waiting for chair judge to enter the motion...*"
 
@@ -291,12 +293,15 @@ class EmbedBuilder:
     def create_chair_control_embed(debate_round) -> discord.Embed:
         """Create embed for the chair judge control panel."""
         if debate_round.motions and not debate_round.motion:
-            # AP: motions released, veto in progress
-            lines = [f"**Motion {i+1}:** {m}" for i, m in enumerate(debate_round.motions)]
+            # AP: motions released, veto in progress — show each motion with its own infoslide
+            lines = []
+            for i, m in enumerate(debate_round.motions):
+                line = f"**Motion {i+1}:** {m}"
+                if debate_round.motion_infoslides and debate_round.motion_infoslides[i]:
+                    line += f"\n> *Infoslide:* {debate_round.motion_infoslides[i]}"
+                lines.append(line)
             desc = f"**Chair:** {debate_round.judges.chair.mention}\n\n"
-            desc += "\n".join(lines)
-            if debate_round.infoslide:
-                desc += f"\n\n**Infoslide:**\n{debate_round.infoslide}"
+            desc += "\n\n".join(lines)
             desc += "\n\n*Waiting for teams to submit their veto rankings...*"
         elif debate_round.motion:
             # Motion resolved (1v1 single motion or post-veto AP)
@@ -308,9 +313,8 @@ class EmbedBuilder:
                 desc += f"**Infoslide:**\n{debate_round.infoslide}\n\n"
             desc += "Start prep time when all participants are ready."
         else:
-            # No motions entered yet
-            label = "Enter the motions" if debate_round.format_label == "AP" else "Enter the debate motion"
-            desc = f"**Chair:** {debate_round.judges.chair.mention}\n\n{label} to get started."
+            # No motion yet (1v1 only — AP uses create_ap_motion_input_embed for this state)
+            desc = f"**Chair:** {debate_round.judges.chair.mention}\n\nEnter the debate motion to get started."
         return discord.Embed(
             title="Chair Judge Controls",
             description=desc,
@@ -611,10 +615,13 @@ class EmbedBuilder:
     @staticmethod
     def create_motions_released_embed(debate_round, end_timestamp: int) -> discord.Embed:
         """Create embed posted in text channel when chair releases 3 AP motions."""
-        lines = [f"**Motion {i+1}:** {m}" for i, m in enumerate(debate_round.motions)]
-        desc = "\n".join(lines)
-        if debate_round.infoslide:
-            desc = f"**Infoslide:**\n{debate_round.infoslide}\n\n" + desc
+        lines = []
+        for i, m in enumerate(debate_round.motions):
+            line = f"**Motion {i+1}:** {m}"
+            if debate_round.motion_infoslides and debate_round.motion_infoslides[i]:
+                line += f"\n> *Infoslide:* {debate_round.motion_infoslides[i]}"
+            lines.append(line)
+        desc = "\n\n".join(lines)
         desc += (
             f"\n\nBoth teams have **5 minutes** to submit their motion rankings.\n"
             f"Veto closes <t:{end_timestamp}:R>"
@@ -624,6 +631,35 @@ class EmbedBuilder:
             description=desc,
             color=EmbedBuilder.COLOR_PRIMARY
         )
+
+    @staticmethod
+    def create_ap_motion_input_embed(pending_motions: list) -> discord.Embed:
+        """Create embed for the AP motion input phase (shows which motions are entered so far)."""
+        lines = []
+        for i, letter in enumerate(['A', 'B', 'C']):
+            entry = pending_motions[i]
+            if entry:
+                text, infoslide = entry
+                line = f"**Motion {letter} ✓:** {text}"
+                if infoslide:
+                    line += f"\n> *Infoslide:* {infoslide}"
+            else:
+                line = f"**Motion {letter}:** *Not yet entered*"
+            lines.append(line)
+
+        all_entered = all(m is not None for m in pending_motions)
+        footer = (
+            "All motions entered — click 'Release Motions' to begin the veto."
+            if all_entered
+            else "Enter all 3 motions to enable 'Release Motions'."
+        )
+        embed = discord.Embed(
+            title="Chair Judge Controls",
+            description="\n\n".join(lines),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        embed.set_footer(text=footer)
+        return embed
 
     @staticmethod
     def create_veto_prompt_embed(debate_round) -> discord.Embed:
@@ -678,13 +714,26 @@ class EmbedBuilder:
             value=debate_round.motion,
             inline=False
         )
+        selected = debate_round.debated_motion_index
+        if debate_round.motion_infoslides and debate_round.motion_infoslides[selected]:
+            embed.add_field(
+                name="Infoslide",
+                value=debate_round.motion_infoslides[selected],
+                inline=False
+            )
         return embed
 
     @staticmethod
     def create_coin_toss_embed(debate_round, tied_indices: list, gov_preferred_idx: int, opp_preferred_idx: int) -> discord.Embed:
         """Create embed for the coin toss phase when a tie occurs."""
         motions = debate_round.motions
-        tied_list = "\n".join(f"• Motion {i+1}: {motions[i]}" for i in tied_indices)
+        tied_lines = []
+        for i in tied_indices:
+            line = f"• Motion {i+1}: {motions[i]}"
+            if debate_round.motion_infoslides and debate_round.motion_infoslides[i]:
+                line += f"\n  *Infoslide:* {debate_round.motion_infoslides[i]}"
+            tied_lines.append(line)
+        tied_list = "\n".join(tied_lines)
         desc = (
             f"Both teams vetoed the same motion. A coin toss will decide between:\n{tied_list}\n\n"
             f"**Government prefers:** Motion {gov_preferred_idx + 1}\n"

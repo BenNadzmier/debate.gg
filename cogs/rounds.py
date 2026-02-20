@@ -879,63 +879,37 @@ class MotionInputModal(discord.ui.Modal):
         await interaction.response.edit_message(embed=chair_embed, view=self.chair_view)
 
 
-class APMotionInputModal(discord.ui.Modal):
-    """Modal for entering 3 AP motions + optional shared infoslide."""
+class APSingleMotionModal(discord.ui.Modal):
+    """Modal for entering one AP motion and its optional infoslide."""
 
-    def __init__(self, chair_view):
-        super().__init__(title="Enter AP Motions")
+    def __init__(self, motion_index: int, chair_view):
+        letter = ['A', 'B', 'C'][motion_index]
+        super().__init__(title=f"Enter Motion {letter}")
+        self.motion_index = motion_index
         self.chair_view = chair_view
 
-        self.motion1 = discord.ui.InputText(
-            label="Motion 1",
-            style=discord.InputTextStyle.long,
-            required=True
-        )
-        self.motion2 = discord.ui.InputText(
-            label="Motion 2",
-            style=discord.InputTextStyle.long,
-            required=True
-        )
-        self.motion3 = discord.ui.InputText(
-            label="Motion 3",
+        self.motion_input = discord.ui.InputText(
+            label="Motion",
             style=discord.InputTextStyle.long,
             required=True
         )
         self.infoslide_input = discord.ui.InputText(
             label="Infoslide (Optional)",
-            placeholder="Enter context/background information for the motions...",
             style=discord.InputTextStyle.long,
             required=False
         )
-        self.add_item(self.motion1)
-        self.add_item(self.motion2)
-        self.add_item(self.motion3)
+        self.add_item(self.motion_input)
         self.add_item(self.infoslide_input)
 
     async def callback(self, interaction: discord.Interaction):
-        motions = [
-            self.motion1.value.strip(),
-            self.motion2.value.strip(),
-            self.motion3.value.strip()
-        ]
-        if not all(motions):
-            await interaction.response.send_message(
-                "All 3 motions are required.", ephemeral=True
-            )
-            return
-
-        debate_round = self.chair_view.debate_round
-        debate_round.motions = motions
+        motion_text = self.motion_input.value.strip()
         infoslide_val = self.infoslide_input.value.strip() if self.infoslide_input.value else None
-        debate_round.infoslide = infoslide_val or None
 
-        # Switch chair control to "waiting for veto" state
-        self.chair_view.set_waiting_for_veto()
-        chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
-        await interaction.response.edit_message(embed=chair_embed, view=self.chair_view)
+        self.chair_view.pending_motions[self.motion_index] = (motion_text, infoslide_val)
+        self.chair_view._update_motion_buttons()
 
-        # Release motions to teams and start veto process
-        await self.chair_view.rounds_cog.release_motions(debate_round, interaction.guild)
+        embed = EmbedBuilder.create_ap_motion_input_embed(self.chair_view.pending_motions)
+        await interaction.response.edit_message(embed=embed, view=self.chair_view)
 
 
 class VetoView(discord.ui.View):
@@ -1161,16 +1135,87 @@ class ChairJudgeControlView(discord.ui.View):
         self.message: Optional[discord.Message] = None
         self.chair_id = debate_round.judges.chair.id
 
-        # Start with "Enter Motion" button
+        # AP motion input state (populated before Release Motions is clicked)
+        self.pending_motions: list = [None, None, None]  # each entry: (motion_text, infoslide_or_None)
+        self._motion_buttons: list = []
+        self._release_btn: Optional[discord.ui.Button] = None
+
+        # Start with "Enter Motion" button (or AP 4-button layout)
         self._setup_enter_motion()
 
     def _setup_enter_motion(self):
-        """Show the Enter Motion(s) button."""
+        """Show the motion entry UI (format-aware)."""
         self.clear_items()
-        label = "Enter Motions" if self.debate_round.format_label == "AP" else "Enter Motion"
-        btn = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
-        btn.callback = self._enter_motion_callback
-        self.add_item(btn)
+        if self.debate_round.format_label == "AP":
+            self._setup_ap_motion_buttons()
+        else:
+            btn = discord.ui.Button(label="Enter Motion", style=discord.ButtonStyle.primary)
+            btn.callback = self._enter_motion_callback
+            self.add_item(btn)
+
+    def _setup_ap_motion_buttons(self):
+        """Show Input Motion A/B/C buttons + disabled Release Motions button."""
+        self.clear_items()
+        self._motion_buttons = []
+        for i, letter in enumerate(['A', 'B', 'C']):
+            btn = discord.ui.Button(
+                label=f"Input Motion {letter}",
+                style=discord.ButtonStyle.primary,
+                row=0
+            )
+            btn.callback = self._make_motion_button_callback(i)
+            self.add_item(btn)
+            self._motion_buttons.append(btn)
+
+        self._release_btn = discord.ui.Button(
+            label="Release Motions",
+            style=discord.ButtonStyle.success,
+            disabled=True,
+            row=1
+        )
+        self._release_btn.callback = self._release_motions_callback
+        self.add_item(self._release_btn)
+
+    def _make_motion_button_callback(self, index: int):
+        """Return a callback that opens APSingleMotionModal for the given motion index."""
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.chair_id:
+                await interaction.response.send_message(
+                    "Only the chair judge can enter motions.", ephemeral=True
+                )
+                return
+            await interaction.response.send_modal(APSingleMotionModal(index, self))
+        return callback
+
+    def _update_motion_buttons(self):
+        """Update button labels/styles after a motion is entered; enable Release when all 3 done."""
+        letters = ['A', 'B', 'C']
+        for i, btn in enumerate(self._motion_buttons):
+            if self.pending_motions[i]:
+                btn.label = f"Motion {letters[i]} ✓"
+                btn.style = discord.ButtonStyle.secondary
+            else:
+                btn.label = f"Input Motion {letters[i]}"
+                btn.style = discord.ButtonStyle.primary
+        self._release_btn.disabled = not all(self.pending_motions)
+
+    async def _release_motions_callback(self, interaction: discord.Interaction):
+        """Handle Release Motions button — commit motions to the round and start veto."""
+        if interaction.user.id != self.chair_id:
+            await interaction.response.send_message(
+                "Only the chair judge can release motions.", ephemeral=True
+            )
+            return
+
+        debate_round = self.debate_round
+        debate_round.motions = [m[0] for m in self.pending_motions]
+        debate_round.motion_infoslides = [m[1] for m in self.pending_motions]
+
+        self.set_waiting_for_veto()
+        chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
+        await interaction.response.edit_message(embed=chair_embed, view=self)
+
+        await self.rounds_cog.release_motions(debate_round, interaction.guild)
 
     def set_waiting_for_veto(self):
         """Replace buttons with a disabled waiting indicator during veto."""
@@ -1193,18 +1238,13 @@ class ChairJudgeControlView(discord.ui.View):
         self.add_item(btn)
 
     async def _enter_motion_callback(self, interaction: discord.Interaction):
-        """Handle Enter Motion(s) button click."""
+        """Handle Enter Motion button click (1v1 only)."""
         if interaction.user.id != self.chair_id:
             await interaction.response.send_message(
                 "Only the chair judge can enter the motion.", ephemeral=True
             )
             return
-
-        if self.debate_round.format_label == "AP":
-            modal = APMotionInputModal(self)
-        else:
-            modal = MotionInputModal(self)
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_modal(MotionInputModal(self))
 
     async def _start_prep_callback(self, interaction: discord.Interaction):
         """Handle Start Prep button click."""
@@ -1407,7 +1447,10 @@ class Rounds(commands.Cog):
 
             # Post chair judge controls
             chair_view = ChairJudgeControlView(self, debate_round, round_info_message)
-            chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
+            if debate_round.format_label == "AP":
+                chair_embed = EmbedBuilder.create_ap_motion_input_embed(chair_view.pending_motions)
+            else:
+                chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
             chair_view.message = await text_channel.send(embed=chair_embed, view=chair_view)
             self._chair_views[debate_round.round_id] = chair_view
 
@@ -1594,6 +1637,9 @@ class Rounds(commands.Cog):
         """Set the final motion, post results, and re-enable chair controls."""
         debate_round.motion = debate_round.motions[motion_index]
         debate_round.debated_motion_index = motion_index
+        # Propagate the winning motion's infoslide so downstream code (prep DMs, etc.) works unchanged
+        if debate_round.motion_infoslides:
+            debate_round.infoslide = debate_round.motion_infoslides[motion_index]
 
         text_channel = guild.get_channel(debate_round.channel_ids['text'])
 
