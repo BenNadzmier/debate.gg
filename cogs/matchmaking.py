@@ -858,8 +858,8 @@ class Matchmaking(commands.Cog):
         description="Request to observe a user's debate round.",
         guild_ids=[Config.GUILD_ID]
     )
-    async def observe_command(self, ctx: discord.ApplicationContext,
-                              user: discord.Member = discord.Option(description="The participant you want to observe")):
+    @discord.option("user", discord.Member, description="The participant you want to observe", required=True)
+    async def observe_command(self, ctx: discord.ApplicationContext, user: discord.Member):
         """Request permission to observe another user's round."""
         if user.id == ctx.author.id:
             await ctx.respond(embed=EmbedBuilder.create_error_embed(
