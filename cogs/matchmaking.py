@@ -147,13 +147,15 @@ class Matchmaking(commands.Cog):
         """Remove a completed round."""
         self.active_rounds.pop(round_id, None)
 
-    def requeue_participants(self, debate_round: DebateRound):
-        """Return all participants to their original queue."""
+    def requeue_participants(self, debate_round: DebateRound, excluded_member=None):
+        """Return all participants to their original queue, skipping the decliner if any."""
         if not debate_round.format_label:
             return
         queue = self._get_queue(debate_round.format_label)
         roles = debate_round.get_original_queue_roles()
         for member, role in roles.items():
+            if excluded_member and member.id == excluded_member.id:
+                continue
             if role == "debater":
                 queue.add_debater(member)
             else:

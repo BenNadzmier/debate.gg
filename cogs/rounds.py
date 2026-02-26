@@ -33,13 +33,13 @@ class ParticipantConfirmationView(discord.ui.View):
             return
         await self._cancel_round("Confirmation timed out.")
 
-    async def _cancel_round(self, reason: str):
+    async def _cancel_round(self, reason: str, excluded_member=None):
         """Cancel the round, re-queue participants, update message."""
         self.declined = True
         self.stop()
 
-        # Re-queue all participants
-        self.matchmaking_cog.requeue_participants(self.debate_round)
+        # Re-queue all participants except the decliner (if any)
+        self.matchmaking_cog.requeue_participants(self.debate_round, excluded_member=excluded_member)
         self.matchmaking_cog.current_round = None
 
         # Update lobby display and check thresholds
@@ -119,9 +119,13 @@ class ParticipantConfirmationView(discord.ui.View):
             )
             return
 
-        await interaction.response.defer()
+        await interaction.response.send_message(
+            "You declined the match. Use `/queue` again if you want to be matched.",
+            ephemeral=True
+        )
         await self._cancel_round(
-            f"{interaction.user.mention} declined. Round cancelled."
+            f"{interaction.user.mention} declined. Round cancelled.",
+            excluded_member=interaction.user
         )
 
 
