@@ -1225,17 +1225,32 @@ class ChairJudgeControlView(discord.ui.View):
         debate_round.motions = [m[0] for m in self.pending_motions]
         debate_round.motion_infoslides = [m[1] for m in self.pending_motions]
 
-        self.set_waiting_for_veto()
+        self.show_prep_in_progress()
+        duration = Config.PREP_TIME_AP
+        end_timestamp = int(time.time()) + duration
+        debate_round._prep_end_timestamp = end_timestamp
+
         chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
+        chair_embed.description += f"\n\nPrep ends <t:{end_timestamp}:R>"
         await interaction.response.edit_message(embed=chair_embed, view=self)
 
-        await self.rounds_cog.release_motions(debate_round, interaction.guild)
+        await self.rounds_cog.release_motions(debate_round, interaction.guild, duration)
 
     def set_waiting_for_veto(self):
         """Replace buttons with a disabled waiting indicator during veto."""
         self.clear_items()
         btn = discord.ui.Button(
             label="Veto In Progress...",
+            style=discord.ButtonStyle.secondary,
+            disabled=True
+        )
+        self.add_item(btn)
+
+    def show_prep_in_progress(self):
+        """Replace buttons with a disabled Prep In Progress indicator."""
+        self.clear_items()
+        btn = discord.ui.Button(
+            label="Prep In Progress",
             style=discord.ButtonStyle.secondary,
             disabled=True
         )
@@ -1300,7 +1315,7 @@ class ChairJudgeControlView(discord.ui.View):
 
         # Start background prep timer
         task = self.rounds_cog.bot.loop.create_task(
-            self.rounds_cog.run_prep_timer(guild, self.debate_round, text_channel, duration)
+            self.rounds_cog.run_prep_timer(interaction.guild, self.debate_round, text_channel, duration)
         )
         self.debate_round._prep_task = task
 
@@ -1534,8 +1549,8 @@ class Rounds(commands.Cog):
             except discord.Forbidden:
                 pass
 
-    async def release_motions(self, debate_round: DebateRound, guild: discord.Guild):
-        """Post motions to text channel, create veto view, and start 5-minute veto timer."""
+    async def release_motions(self, debate_round: DebateRound, guild: discord.Guild, duration: int):
+        """Post motions to text channel, create veto view, and start both timers (veto + prep)."""
         text_channel = guild.get_channel(debate_round.channel_ids['text'])
         end_timestamp = int(time.time()) + 300
 
@@ -1562,6 +1577,10 @@ class Rounds(commands.Cog):
         # Start 5-minute veto timer
         task = self.bot.loop.create_task(self.run_veto_timer(debate_round, guild))
         debate_round._veto_task = task
+
+        # Start 30-minute prep timer concurrently (veto resolves within this window)
+        task = self.bot.loop.create_task(self.run_prep_timer(guild, debate_round, text_channel, duration))
+        debate_round._prep_task = task
 
     async def run_veto_timer(self, debate_round: DebateRound, guild: discord.Guild):
         """5-minute background task; auto-resolves veto if teams don't submit in time."""
@@ -1673,16 +1692,12 @@ class Rounds(commands.Cog):
             except Exception:
                 pass
 
-        # Show "Start Prep" button on chair control
-        if chair_view and chair_view.message:
-            chair_view.show_start_prep()
-            try:
-                await chair_view.message.edit(
-                    embed=EmbedBuilder.create_chair_control_embed(debate_round),
-                    view=chair_view
-                )
-            except Exception:
-                pass
+        # Post prep started embed and DM debaters now that the winning motion is known
+        end_ts = getattr(debate_round, '_prep_end_timestamp', None)
+        if end_ts and text_channel:
+            prep_embed = EmbedBuilder.create_prep_started_embed(debate_round, end_ts)
+            await text_channel.send(embed=prep_embed)
+            await self.send_prep_dms(debate_round, end_ts)
 
         # Disable veto view buttons if still visible
         veto_view = self._veto_views.pop(debate_round.round_id, None)
