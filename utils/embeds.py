@@ -420,6 +420,19 @@ class EmbedBuilder:
         )
 
     @staticmethod
+    def create_observe_request_embed(requester: discord.Member) -> discord.Embed:
+        """Create DM embed sent to a participant asking if they accept an observation request."""
+        return discord.Embed(
+            title="Observation Request",
+            description=(
+                f"**{requester.display_name}** would like to observe your debate round.\n\n"
+                "If you accept, they will have **read-only** access to the text channel "
+                "and **listen-only** access to the debate voice channel."
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+    @staticmethod
     def create_ballot_results_embed(debate_round) -> discord.Embed:
         """Create full ballot results embed showing winner, all speaker scores, and totals."""
         ballot = debate_round.ballot

@@ -38,7 +38,7 @@ A Discord bot for matchmaking debate rounds. Users queue up as debaters or judge
 2. `check_matchmaking_threshold()` auto-detects when enough players queue
 3. Bot auto-creates round with random team allocation (shuffled)
 4. Participant confirmation sent to lobby channel (90s timeout, all must confirm)
-5. On all confirm → private category + 5 channels created (text, debate VC, gov-prep VC, opp-prep VC, judges VC)
+5. On all confirm → private category + 6 channels created (text, debate VC, gov-prep VC, opp-prep VC, judges VC, judges-text)
 6. **1v1:** Chair clicks "Enter Motion" → modal (motion + optional infoslide) → "Start Prep" button appears
 6. **AP:** Chair sees 4-button UI — "Input Motion A/B/C" + disabled "Release Motions". Each motion button opens a modal (motion + optional infoslide). Once all 3 entered, "Release Motions" enables.
 7. **AP veto phase:** Chair clicks "Release Motions" → motions posted in text channel → teams have 5 min to secretly rank motions 1-3 → bot resolves winner (see AP Motion Veto System) → chair gets "Start Prep" button
@@ -54,7 +54,8 @@ A Discord bot for matchmaking debate rounds. Users queue up as debaters or judge
 - **Category + Text + Debate VC**: All round participants can see/access
 - **Gov Prep VC**: Government team members only
 - **Opp Prep VC**: Opposition team members only
-- **Judges VC**: Judges only
+- **Judges VC + Judges Text**: Judges only
+- **Observers**: Text channel (read-only, no send_messages) + Debate VC (listen-only, no speak); cannot see prep/judge channels
 - **@everyone**: Denied view/connect on all round channels
 - **Bot**: Full permissions including `move_members` and `manage_channels`
 
@@ -94,6 +95,33 @@ Debaters can form parties (max 3 members) to be guaranteed on the same team in A
 ### Storage (on Matchmaking cog, in-memory)
 - `self.parties: dict[int, Party]` — host_id → Party
 - `self.member_to_party: dict[int, int]` — member_id → host_id
+
+## Observer System
+Any server member can request to watch a round. The target participant approves or declines via DM.
+
+### Command
+- `/observe @user` — Request to observe the user's current or upcoming round (user must be in queue or active round)
+
+### Flow
+1. Observer runs `/observe @user` → bot sends DM to target with Accept/Decline buttons (5 min timeout)
+2. **Decline / Timeout**: Observer receives DM with appropriate message; request ends
+3. **Accept — active round**: `add_observer_to_round()` called immediately; observer gets `set_permissions()` on text channel + debate VC; moved to debate VC if in a VC
+4. **Accept — user in queue**: Observer stored in `matchmaking_cog.pending_observers[target.id]`; when round forms, observer permissions added to category at channel creation time; observer moved to debate VC when channels are created
+
+### Observer Permissions
+- Text channel: `view_channel=True, read_message_history=True, send_messages=False`
+- Debate VC: `view_channel=True, connect=True, speak=False`
+- Prep VCs / Judges VC / Judges Text: no access (these channels have explicit `{@everyone: deny_all}` overwrites; observer has no entry, so falls to deny)
+
+### Storage (on Matchmaking cog, in-memory)
+- `self.pending_observers: dict[int, list[discord.Member]]` — observed_user_id → [observer Members]
+- `debate_round.observers: list[discord.Member]` — observers with active access to a round
+
+### Key Functions
+- `Matchmaking._find_member_active_round(member)` — returns DebateRound member is in, or None
+- `Matchmaking._is_member_in_queue(member)` — checks all queue lists (1v1 + AP debaters + judges)
+- `Rounds.add_observer_to_round(debate_round, observer, guild)` — grants dynamic permissions on text + debate VC
+- `ObserveRequestView` (DM, timeout=300) — Accept/Decline buttons sent to the target participant
 
 ## AP Motion Veto System
 After channels are created, the chair judge enters 3 motions (each with an optional infoslide) using separate modals. Teams then secretly rank the motions before the debated motion is revealed.

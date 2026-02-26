@@ -92,6 +92,99 @@ class PartyInviteView(discord.ui.View):
         )
 
 
+class ObserveRequestView(discord.ui.View):
+    """View sent in DMs to ask a participant if they accept an observation request."""
+
+    def __init__(self, cog, observer: discord.Member, target: discord.Member):
+        super().__init__(timeout=300)
+        self.cog = cog          # Matchmaking cog
+        self.observer = observer
+        self.target = target
+        self.message = None
+
+    async def on_timeout(self):
+        if self.message:
+            for item in self.children:
+                item.disabled = True
+            try:
+                await self.message.edit(view=self)
+            except discord.NotFound:
+                pass
+        try:
+            await self.observer.send(embed=EmbedBuilder.create_error_embed(
+                "Observation Request Expired",
+                f"**{self.target.display_name}** did not respond to your observation request."
+            ))
+        except discord.Forbidden:
+            pass
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
+    async def accept_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.defer()
+        for item in self.children:
+            item.disabled = True
+        await interaction.edit_original_response(
+            embed=EmbedBuilder.create_success_embed(
+                "Request Accepted",
+                f"You have accepted **{self.observer.display_name}**'s request to observe your round."
+            ),
+            view=self
+        )
+
+        rounds_cog = self.cog.bot.get_cog("Rounds")
+        guild = self.cog.bot.get_guild(Config.GUILD_ID)
+        target_round = self.cog._find_member_active_round(self.target)
+
+        if target_round:
+            await rounds_cog.add_observer_to_round(target_round, self.observer, guild)
+            try:
+                await self.observer.send(embed=EmbedBuilder.create_success_embed(
+                    "Observation Request Accepted",
+                    f"**{self.target.display_name}** accepted! You now have access to Round {target_round.round_id}."
+                ))
+            except discord.Forbidden:
+                pass
+        elif self.cog._is_member_in_queue(self.target):
+            self.cog.pending_observers.setdefault(self.target.id, []).append(self.observer)
+            try:
+                await self.observer.send(embed=EmbedBuilder.create_success_embed(
+                    "Observation Request Accepted",
+                    f"**{self.target.display_name}** accepted! You'll be granted access when their round starts."
+                ))
+            except discord.Forbidden:
+                pass
+        else:
+            try:
+                await self.observer.send(embed=EmbedBuilder.create_error_embed(
+                    "Observation Request Accepted (Too Late)",
+                    f"**{self.target.display_name}** accepted, but they are no longer in a round or queue."
+                ))
+            except discord.Forbidden:
+                pass
+        self.stop()
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
+    async def decline_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.defer()
+        for item in self.children:
+            item.disabled = True
+        await interaction.edit_original_response(
+            embed=EmbedBuilder.create_error_embed(
+                "Request Declined",
+                f"You declined **{self.observer.display_name}**'s request to observe your round."
+            ),
+            view=self
+        )
+        try:
+            await self.observer.send(embed=EmbedBuilder.create_error_embed(
+                "Observation Request Declined",
+                f"**{self.target.display_name}** declined your request to observe their round."
+            ))
+        except discord.Forbidden:
+            pass
+        self.stop()
+
+
 class LobbyView(discord.ui.View):
     """Persistent view for the lobby with join/leave buttons."""
 
@@ -127,6 +220,8 @@ class Matchmaking(commands.Cog):
         # Party system
         self.parties: dict[int, Party] = {}        # host_id -> Party
         self.member_to_party: dict[int, int] = {}  # member_id -> host_id
+        # Observer system
+        self.pending_observers: dict[int, list] = {}  # observed_user_id → [observer Members]
 
     def _get_queue(self, format_name: str) -> MatchmakingQueue:
         """Get the queue for a given format."""
@@ -155,6 +250,20 @@ class Matchmaking(commands.Cog):
     def remove_active_round(self, round_id: int):
         """Remove a completed round."""
         self.active_rounds.pop(round_id, None)
+
+    def _is_member_in_queue(self, member: discord.Member) -> bool:
+        """Check if a member is in any queue."""
+        return (member in self.queue_1v1.debaters or
+                member in self.queue_1v1.judges or
+                member in self.queue_ap.debaters or
+                member in self.queue_ap.judges)
+
+    def _find_member_active_round(self, member: discord.Member):
+        """Return the active DebateRound the member is in, or None."""
+        for debate_round in self.active_rounds.values():
+            if member in debate_round.get_all_participants():
+                return debate_round
+        return None
 
     def requeue_participants(self, debate_round: DebateRound, excluded_member=None):
         """Return all participants to their original queue, skipping the decliner if any."""
@@ -743,6 +852,73 @@ class Matchmaking(commands.Cog):
 
         await self.update_lobby_display()
         await self.check_matchmaking_threshold()
+
+    @discord.slash_command(
+        name="observe",
+        description="Request to observe a user's debate round.",
+        guild_ids=[Config.GUILD_ID]
+    )
+    async def observe_command(self, ctx: discord.ApplicationContext,
+                              user: discord.Member = discord.Option(description="The participant you want to observe")):
+        """Request permission to observe another user's round."""
+        if user.id == ctx.author.id:
+            await ctx.respond(embed=EmbedBuilder.create_error_embed(
+                "Invalid Target", "You cannot observe yourself."
+            ), ephemeral=True)
+            return
+        if user.bot:
+            await ctx.respond(embed=EmbedBuilder.create_error_embed(
+                "Invalid Target", "You cannot observe a bot."
+            ), ephemeral=True)
+            return
+
+        target_round = self._find_member_active_round(user)
+        in_queue = self._is_member_in_queue(user)
+
+        if not target_round and not in_queue:
+            await ctx.respond(embed=EmbedBuilder.create_error_embed(
+                "User Not Available",
+                f"**{user.display_name}** is not currently in a round or queue."
+            ), ephemeral=True)
+            return
+
+        if target_round and ctx.author in target_round.get_all_participants():
+            await ctx.respond(embed=EmbedBuilder.create_error_embed(
+                "Already a Participant",
+                "You are already a participant in this round."
+            ), ephemeral=True)
+            return
+
+        if target_round and ctx.author in target_round.observers:
+            await ctx.respond(embed=EmbedBuilder.create_error_embed(
+                "Already Observing",
+                f"You are already observing **{user.display_name}**'s round."
+            ), ephemeral=True)
+            return
+
+        if user.id in self.pending_observers and ctx.author in self.pending_observers[user.id]:
+            await ctx.respond(embed=EmbedBuilder.create_error_embed(
+                "Request Already Sent",
+                f"You already have a pending observation request for **{user.display_name}**."
+            ), ephemeral=True)
+            return
+
+        view = ObserveRequestView(self, ctx.author, user)
+        try:
+            view.message = await user.send(
+                embed=EmbedBuilder.create_observe_request_embed(ctx.author), view=view
+            )
+        except discord.Forbidden:
+            await ctx.respond(embed=EmbedBuilder.create_error_embed(
+                "Cannot Send DM",
+                f"**{user.display_name}** has DMs disabled and cannot receive the request."
+            ), ephemeral=True)
+            return
+
+        await ctx.respond(embed=EmbedBuilder.create_success_embed(
+            "Observation Request Sent",
+            f"A request has been sent to **{user.display_name}**. Waiting for their response."
+        ), ephemeral=True)
 
 
 def setup(bot):

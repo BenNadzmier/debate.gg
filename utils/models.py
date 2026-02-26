@@ -236,6 +236,7 @@ class DebateRound:
     ballot: Optional['Ballot'] = None
     judge_ratings: List['JudgeRating'] = field(default_factory=list)
     rated_debater_ids: set = field(default_factory=set)
+    observers: List[discord.Member] = field(default_factory=list)
 
     def get_all_participants(self) -> List[discord.Member]:
         """Get all participants in the round."""

@@ -1405,11 +1405,26 @@ class Rounds(commands.Cog):
             read_message_history=True,
             move_members=True
         )
+        observer_perms = discord.PermissionOverwrite(
+            view_channel=True, connect=True,
+            read_message_history=True, send_messages=False, speak=False
+        )
 
         # Category: all participants can see
         category_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
         for member in all_participants:
             category_overwrites[member] = allow_view_connect
+
+        # Collect any accepted pending observers for this round's participants
+        round_observers: list = []
+        for participant in all_participants:
+            pending = matchmaking_cog.pending_observers.pop(participant.id, [])
+            round_observers.extend(pending)
+        # Deduplicate (multiple targets in same round could share an observer)
+        round_observers = list({m.id: m for m in round_observers}.values())
+        for observer in round_observers:
+            category_overwrites[observer] = observer_perms
+        debate_round.observers = round_observers
 
         try:
             category = await guild.create_category(
@@ -1501,6 +1516,23 @@ class Rounds(commands.Cog):
             await self.send_round_confirmed_dms(debate_round)
             await self.move_to_prep_channels(guild, debate_round)
 
+            # Move accepted pending observers to debate VC and notify them
+            if round_observers:
+                debate_vc_obj = guild.get_channel(debate_round.channel_ids["debate"])
+                for observer in round_observers:
+                    if observer.voice and debate_vc_obj:
+                        try:
+                            await observer.move_to(debate_vc_obj)
+                        except Exception:
+                            pass
+                    try:
+                        await observer.send(embed=EmbedBuilder.create_success_embed(
+                            "Round Started",
+                            "The round you're observing has started! You now have access to the round channels."
+                        ))
+                    except discord.Forbidden:
+                        pass
+
             logger.info(f"Created channels for round {round_id} in category {category.name}")
 
         except discord.Forbidden:
@@ -1543,6 +1575,31 @@ class Rounds(commands.Cog):
                     await member.move_to(judges_vc)
             except Exception:
                 pass
+
+    async def add_observer_to_round(self, debate_round: DebateRound, observer: discord.Member, guild: discord.Guild):
+        """Dynamically grant an observer read/listen-only access to the text channel and debate VC."""
+        if observer in debate_round.observers or observer in debate_round.get_all_participants():
+            return
+
+        debate_round.observers.append(observer)
+
+        observer_perms = discord.PermissionOverwrite(
+            view_channel=True, connect=True,
+            read_message_history=True, send_messages=False, speak=False
+        )
+
+        text_channel = guild.get_channel(debate_round.channel_ids.get("text"))
+        debate_vc = guild.get_channel(debate_round.channel_ids.get("debate"))
+
+        if text_channel:
+            await text_channel.set_permissions(observer, overwrite=observer_perms)
+        if debate_vc:
+            await debate_vc.set_permissions(observer, overwrite=observer_perms)
+            if observer.voice:
+                try:
+                    await observer.move_to(debate_vc)
+                except Exception:
+                    pass
 
     async def send_round_confirmed_dms(self, debate_round: DebateRound):
         """DM all participants (debaters + judges) with the debate room link."""
