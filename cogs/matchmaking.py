@@ -71,6 +71,15 @@ class PartyInviteView(discord.ui.View):
             content=f"You've joined **{self.host.display_name}**'s party!",
             embed=None, view=self
         )
+        try:
+            await self.host.send(
+                embed=EmbedBuilder.create_success_embed(
+                    "Invite Accepted",
+                    f"**{self.invited_user.display_name}** has accepted your party invite!"
+                )
+            )
+        except discord.Forbidden:
+            pass
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
     async def decline_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -413,8 +422,21 @@ class Matchmaking(commands.Cog):
                         f"Party Joined AP Queue",
                         f"You and your party ({party.size} members) have joined the AP debater queue.\n"
                         f"**Debaters:** {queue.debater_count()} | **Judges:** {queue.judge_count()}"
-                    )
+                    ),
+                    ephemeral=True
                 )
+                for member in party.members:
+                    if member.id != ctx.author.id:
+                        try:
+                            await member.send(
+                                embed=EmbedBuilder.create_success_embed(
+                                    "Added to Queue",
+                                    f"Your party host **{ctx.author.display_name}** has queued your party for AP.\n"
+                                    f"You'll be matched when there are enough players."
+                                )
+                            )
+                        except discord.Forbidden:
+                            pass
                 await self.update_lobby_display()
                 await self.check_matchmaking_threshold()
                 return
@@ -440,7 +462,8 @@ class Matchmaking(commands.Cog):
                     f"Joined {format_display} Queue as {role.title()}",
                     f"You have been added to the {format_display} {role} queue.\n"
                     f"**Debaters:** {queue.debater_count()} | **Judges:** {queue.judge_count()}"
-                )
+                ),
+                ephemeral=True
             )
         else:
             await ctx.respond(
@@ -448,7 +471,8 @@ class Matchmaking(commands.Cog):
                     f"Switched to {role.title()} in {format_display}",
                     f"You have been moved to {role} in the {format_display} queue.\n"
                     f"**Debaters:** {queue.debater_count()} | **Judges:** {queue.judge_count()}"
-                )
+                ),
+                ephemeral=True
             )
 
         await self.update_lobby_display()
@@ -480,7 +504,7 @@ class Matchmaking(commands.Cog):
                             "Party Left Queue",
                             "Your party has been removed from the queue."
                         ),
-                        ephemeral=False
+                        ephemeral=True
                     )
                     await self.update_lobby_display()
                     await self.check_matchmaking_threshold()
@@ -490,7 +514,7 @@ class Matchmaking(commands.Cog):
                             "Not in Queue",
                             "Your party is not in the matchmaking queue."
                         ),
-                        ephemeral=False
+                        ephemeral=True
                     )
                 return
 
@@ -510,7 +534,7 @@ class Matchmaking(commands.Cog):
                     "Left Queue",
                     "You have been removed from the queue."
                 ),
-                ephemeral=False
+                ephemeral=True
             )
             await self.update_lobby_display()
             await self.check_matchmaking_threshold()
@@ -520,7 +544,7 @@ class Matchmaking(commands.Cog):
                     "Not in Queue",
                     "You are not in the matchmaking queue."
                 ),
-                ephemeral=False
+                ephemeral=True
             )
 
     @discord.slash_command(
@@ -538,7 +562,7 @@ class Matchmaking(commands.Cog):
                 "Queue Cleared",
                 "All matchmaking queues have been cleared."
             ),
-            ephemeral=False
+            ephemeral=True
         )
 
     @discord.slash_command(
@@ -635,7 +659,8 @@ class Matchmaking(commands.Cog):
                 embed=EmbedBuilder.create_success_embed(
                     "Invite Sent",
                     f"Invitation sent to {user.mention}. They'll receive a DM to accept or decline."
-                )
+                ),
+                ephemeral=True
             )
         except discord.Forbidden:
             await ctx.respond(

@@ -1455,32 +1455,47 @@ class Rounds(commands.Cog):
                 overwrites=judge_overwrites
             )
 
+            # Judges-only text channel (chair controls + ballot button hidden from debaters)
+            judge_text_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
+            for member in judge_members:
+                judge_text_overwrites[member] = allow_view_connect
+            judges_text_channel = await category.create_text_channel(
+                name=f"round-{round_id}-judges-text",
+                overwrites=judge_text_overwrites
+            )
+
             debate_round.channel_ids = {
                 "text": text_channel.id,
                 "debate": debate_vc.id,
                 "gov_prep": gov_prep_vc.id,
                 "opp_prep": opp_prep_vc.id,
-                "judges": judges_vc.id
+                "judges": judges_vc.id,
+                "judges_text": judges_text_channel.id,
             }
 
             # Track as active round
             matchmaking_cog.add_active_round(debate_round)
 
-            # Register persistent ballot view
+            # Post round info embed in shared text channel (no ballot button — judges-only)
+            round_embed = EmbedBuilder.create_round_text_channel_embed(debate_round)
+            round_info_message = await text_channel.send(embed=round_embed)
+
+            # Post ballot button in judges-only text channel
             ballot_view = SubmitBallotView(self, round_id)
             self.bot.add_view(ballot_view)
+            ballot_embed = EmbedBuilder.create_success_embed(
+                f"Round {round_id} — Judge Controls",
+                "Use the button below to submit your ballot when the debate is complete."
+            )
+            await judges_text_channel.send(embed=ballot_embed, view=ballot_view)
 
-            # Post round info + ballot button in text channel
-            round_embed = EmbedBuilder.create_round_text_channel_embed(debate_round)
-            round_info_message = await text_channel.send(embed=round_embed, view=ballot_view)
-
-            # Post chair judge controls
+            # Post chair judge controls in judges-only text channel
             chair_view = ChairJudgeControlView(self, debate_round, round_info_message)
             if debate_round.format_label == "AP":
                 chair_embed = EmbedBuilder.create_ap_motion_input_embed(chair_view.pending_motions)
             else:
                 chair_embed = EmbedBuilder.create_chair_control_embed(debate_round)
-            chair_view.message = await text_channel.send(embed=chair_embed, view=chair_view)
+            chair_view.message = await judges_text_channel.send(embed=chair_embed, view=chair_view)
             self._chair_views[debate_round.round_id] = chair_view
 
             await self.send_round_confirmed_dms(debate_round)
