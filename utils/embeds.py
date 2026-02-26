@@ -161,6 +161,30 @@ class EmbedBuilder:
         )
 
         embed.add_field(
+            name="Party System (AP)",
+            value=(
+                "Form a party to guarantee you and your friends are placed on the same team in AP rounds.\n\n"
+                "`/invite @user` — Invite someone to your party (max 3 members)\n"
+                "`/party` — View your current party and members\n"
+                "`/leaveparty` — Leave or disband your party\n\n"
+                "The party host queues for everyone using `/queue`."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Observing Rounds",
+            value=(
+                "Watch an ongoing or upcoming round as a spectator.\n\n"
+                "`/observe @user` — Request to observe a user's round. "
+                "The user must be in a queue or active round, and they must accept your request via DM.\n\n"
+                "Observers can read the text channel and listen in the debate voice channel, "
+                "but cannot send messages or speak."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
             name="What Happens Next",
             value=(
                 "When enough players queue, the bot automatically creates a round "

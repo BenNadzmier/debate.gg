@@ -682,7 +682,7 @@ class Matchmaking(commands.Cog):
     async def guide_command(self, ctx: discord.ApplicationContext):
         """Show the guide for how the bot works."""
         embed = EmbedBuilder.create_guide_embed()
-        await ctx.respond(embed=embed)
+        await ctx.respond(embed=embed, ephemeral=True)
 
     # ─── Party Commands ────────────────────────────────────────────
 
