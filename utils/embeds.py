@@ -748,13 +748,13 @@ class EmbedBuilder:
         )
 
     @staticmethod
-    def create_coin_toss_result_embed(debate_round, result: str, winner_team: str, gov_call: str, opp_call: str) -> discord.Embed:
+    def create_coin_toss_result_embed(debate_round, result: str, winner_team: str, gov_call: str, opp_call: str, winning_motion: str) -> discord.Embed:
         """Create embed showing the coin toss result and selected motion."""
         desc = (
             f"Gov called: **{gov_call.capitalize()}** | Opp called: **{opp_call.capitalize()}**\n"
             f"Coin landed: **{result.capitalize()}**\n\n"
             f"**{winner_team} wins the toss!** Their preferred motion will be debated.\n\n"
-            f"**Motion:** {debate_round.motion}"
+            f"**Motion:** {winning_motion}"
         )
         return discord.Embed(
             title=f"Round {debate_round.round_id} — Coin Toss Result",

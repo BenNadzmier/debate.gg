@@ -1094,6 +1094,11 @@ class CoinTossView(discord.ui.View):
                 self.gov_call = call
                 self.gov_heads.disabled = True
                 self.gov_tails.disabled = True
+                # Force opp to call the opposite side
+                if call == 'heads':
+                    self.opp_heads.disabled = True
+                else:
+                    self.opp_tails.disabled = True
             else:
                 if interaction.user not in opp_members:
                     await interaction.response.send_message(
@@ -1108,6 +1113,11 @@ class CoinTossView(discord.ui.View):
                 self.opp_call = call
                 self.opp_heads.disabled = True
                 self.opp_tails.disabled = True
+                # Force gov to call the opposite side
+                if call == 'heads':
+                    self.gov_heads.disabled = True
+                else:
+                    self.gov_tails.disabled = True
 
             await interaction.response.edit_message(view=self)
 
@@ -1626,9 +1636,10 @@ class Rounds(commands.Cog):
         result = random.choice(['heads', 'tails'])
         winner_team = 'Government' if view.gov_call == result else 'Opposition'
         motion_index = view.gov_preferred_idx if view.gov_call == result else view.opp_preferred_idx
+        winning_motion = debate_round.motions[motion_index]
 
         result_embed = EmbedBuilder.create_coin_toss_result_embed(
-            debate_round, result, winner_team, view.gov_call, view.opp_call
+            debate_round, result, winner_team, view.gov_call, view.opp_call, winning_motion
         )
         try:
             await message.edit(embed=result_embed, view=None)
