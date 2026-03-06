@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands
 import random
@@ -197,6 +198,7 @@ class LobbyView(discord.ui.View):
         """Handle leave queue button press."""
         removed_1v1 = self.cog.queue_1v1.remove_user(interaction.user)
         removed_ap = self.cog.queue_ap.remove_user(interaction.user)
+        self.cog._cancel_queue_timeout(interaction.user.id)
 
         if removed_1v1 or removed_ap:
             await interaction.response.send_message("You have left the queue.", ephemeral=True)
@@ -222,6 +224,8 @@ class Matchmaking(commands.Cog):
         self.member_to_party: dict[int, int] = {}  # member_id -> host_id
         # Observer system
         self.pending_observers: dict[int, list] = {}  # observed_user_id → [observer Members]
+        # Queue timeouts
+        self.queue_timeouts: dict[int, asyncio.Task] = {}  # user_id → running timeout task
 
     def _get_queue(self, format_name: str) -> MatchmakingQueue:
         """Get the queue for a given format."""
@@ -265,6 +269,68 @@ class Matchmaking(commands.Cog):
                 return debate_round
         return None
 
+    def _start_queue_timeout(self, member: discord.Member):
+        """Start (or restart) a 15-minute queue timeout task for a member."""
+        self._cancel_queue_timeout(member.id)
+        task = self.bot.loop.create_task(self._queue_timeout_task(member))
+        self.queue_timeouts[member.id] = task
+
+    def _cancel_queue_timeout(self, member_id: int):
+        """Cancel a member's queue timeout task if one is running."""
+        task = self.queue_timeouts.pop(member_id, None)
+        if task:
+            task.cancel()
+
+    async def _queue_timeout_task(self, member: discord.Member):
+        """Background task: removes a user from the queue after 15 minutes of inactivity."""
+        await asyncio.sleep(900)  # 15 minutes
+
+        # Guard against race condition where task was cancelled but not yet GC'd
+        if not (self.queue_1v1.is_in_queue(member) or self.queue_ap.is_in_queue(member)):
+            return
+
+        self.queue_1v1.remove_user(member)
+        self.queue_ap.remove_user(member)
+        self.queue_timeouts.pop(member.id, None)
+
+        # Party handling
+        party_host_id = self.member_to_party.get(member.id)
+        if party_host_id and party_host_id == member.id:
+            # User is the party host — remove all other party members too
+            party = self.parties.get(party_host_id)
+            if party:
+                for m in list(party.members):
+                    if m.id != member.id:
+                        self.queue_1v1.remove_user(m)
+                        self.queue_ap.remove_user(m)
+                        self._cancel_queue_timeout(m.id)
+                        try:
+                            await m.send(embed=EmbedBuilder.create_error_embed(
+                                "Removed from Queue",
+                                f"Your party host **{member.display_name}**'s queue timed out after 15 minutes. "
+                                "Use `/queue` again when you're ready."
+                            ))
+                        except discord.Forbidden:
+                            pass
+        elif party_host_id:
+            # User is a non-host party member — remove from party too
+            party = self.parties.get(party_host_id)
+            if party:
+                party.remove_member(member)
+            self.member_to_party.pop(member.id, None)
+
+        try:
+            await member.send(embed=EmbedBuilder.create_error_embed(
+                "Queue Timed Out",
+                "You have been in the queue for 15 minutes without finding a match. "
+                "Use `/queue` again when you're ready to play."
+            ))
+        except discord.Forbidden:
+            pass
+
+        await self.update_lobby_display()
+        await self.check_matchmaking_threshold()
+
     def requeue_participants(self, debate_round: DebateRound, excluded_member=None):
         """Return all participants to their original queue, skipping the decliner if any."""
         if not debate_round.format_label:
@@ -278,6 +344,7 @@ class Matchmaking(commands.Cog):
                 queue.add_debater(member)
             else:
                 queue.add_judge(member)
+            self._start_queue_timeout(member)
 
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -341,6 +408,9 @@ class Matchmaking(commands.Cog):
                 debate_round = self.create_round_allocation(debaters, judges, round_type)
                 self.current_round = debate_round
                 debate_round.format_label = format_label
+                # Cancel timeouts before clearing so they don't fire during confirmation
+                for member in list(queue.debaters) + list(queue.judges):
+                    self._cancel_queue_timeout(member.id)
                 queue.clear()
                 await self.update_lobby_display()
 
@@ -525,6 +595,7 @@ class Matchmaking(commands.Cog):
                 for member in party.members:
                     other_queue.remove_user(member)
                     queue.add_debater(member)
+                    self._start_queue_timeout(member)
 
                 await ctx.respond(
                     embed=EmbedBuilder.create_success_embed(
@@ -562,6 +633,7 @@ class Matchmaking(commands.Cog):
             success = queue.add_debater(ctx.author)
         else:
             success = queue.add_judge(ctx.author)
+        self._start_queue_timeout(ctx.author)
 
         format_display = "1v1" if debate_format == "1v1" else "AP"
 
@@ -607,6 +679,7 @@ class Matchmaking(commands.Cog):
                         removed = True
                     if self.queue_ap.remove_user(member):
                         removed = True
+                    self._cancel_queue_timeout(member.id)
                 if removed:
                     await ctx.respond(
                         embed=EmbedBuilder.create_success_embed(
@@ -636,6 +709,7 @@ class Matchmaking(commands.Cog):
 
         removed_1v1 = self.queue_1v1.remove_user(ctx.author)
         removed_ap = self.queue_ap.remove_user(ctx.author)
+        self._cancel_queue_timeout(ctx.author.id)
 
         if removed_1v1 or removed_ap:
             await ctx.respond(
