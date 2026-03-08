@@ -1,7 +1,7 @@
 # Debate.gg - Discord Debate Matchmaking Bot
 
 ## Project Overview
-A Discord bot for matchmaking debate rounds. Users queue up as debaters or judges in either 1v1 or AP (Asian Parliamentary) format. When enough players queue, the bot auto-creates a round with random allocation, participants confirm, channels are created, and the chair judge manages the round.
+A Discord bot for matchmaking debate rounds. Users queue up as debaters or judges in 1v1, AP (Asian Parliamentary), or BP (British Parliamentary) format. When enough players queue, the bot auto-creates a round with random allocation, participants confirm, channels are created, and the chair judge manages the round.
 
 ## Tech Stack
 - **Python 3.10+** with **py-cord** (not discord.py) for Discord API
@@ -22,19 +22,21 @@ A Discord bot for matchmaking debate rounds. Users queue up as debaters or judge
 - `utils/embeds.py` — All Discord embed builders (EmbedBuilder class with static methods)
 
 ### Data Models
-- **FormatType**: `ONE_V_ONE`, `AP`
-- **RoundType**: `PM_LO` (1v1), `DOUBLE_IRON` (2v2), `SINGLE_IRON` (3v2), `STANDARD` (3v3)
+- **FormatType**: `ONE_V_ONE`, `AP`, `BP`
+- **RoundType**: `PM_LO` (1v1), `DOUBLE_IRON` (2v2), `SINGLE_IRON` (3v2), `STANDARD` (3v3), `BP` (4×2)
 - **TeamType**: `SOLO` (1), `IRON` (2), `FULL` (3)
 - **MatchmakingQueue**: Separate debater/judge lists per format, threshold detection
-- **DebateRound**: Teams, judges, motion, infoslide, channel IDs, category ID, format label, ballot, judge_ratings, rated_debater_ids; AP adds: motions (list), motion_infoslides (list), gov_veto, opp_veto, debated_motion_index
-- **Party**: Host + members (max 3), used for AP queue team grouping
+- **DebateRound**: Teams, judges, motion, infoslide, channel IDs, category ID, format label, ballot, bp_ballot, judge_ratings, rated_debater_ids; optional `cg`/`co` (BP only); AP adds: motions (list), motion_infoslides (list), gov_veto, opp_veto, debated_motion_index
+- **Party**: Host + members (max 3 for AP, max 2 for BP), used for AP/BP queue team grouping
 - **SpeakerScore**: member, position_name, score (50-100 substantive, 25-50 reply)
 - **Ballot**: judge, winner, gov_scores, opp_scores, gov_reply, opp_reply, validate() method
-- **BallotDraft**: Accumulates state across the multi-step ballot flow (assignments, scores)
+- **BallotDraft**: Accumulates state across the multi-step AP/1v1 ballot flow (assignments, scores)
+- **BPBallot**: judge, rankings (team_key→rank 1-4), team_scores (team_key→List[SpeakerScore]), validate() method
+- **BPBallotDraft**: Accumulates state across the multi-step BP ballot flow (rankings, og/oo/cg/co_scores)
 - **JudgeRating**: debater, score (1-10), optional feedback
 
 ## Round Lifecycle Flow
-1. Users `/queue` as debater/judge for 1v1 or AP
+1. Users `/queue` as debater/judge for 1v1, AP, or BP
 2. `check_matchmaking_threshold()` auto-detects when enough players queue
 3. Bot auto-creates round with random team allocation (shuffled)
 4. Participant confirmation sent to lobby channel (90s timeout, all must confirm)
@@ -67,13 +69,45 @@ LOBBY_CHANNEL_ID=    # Required - where lobby embed + confirmations appear
 ```
 
 ## Queue Thresholds
-- **1v1**: 2 debaters + 1 judge
-- **Double Iron**: 4 debaters + 1 judge
-- **Single Iron**: 5 debaters + 1 judge
-- **Standard**: 6+ debaters + 1+ judges
+- **1v1**: 2 debaters + 1 judge (separate `queue_1v1`)
+- **Double Iron**: 4 debaters + 1 judge (AP queue)
+- **Single Iron**: 5 debaters + 1 judge (AP queue)
+- **Standard**: 6+ debaters + 1+ judges (AP queue)
+- **BP**: 8 debaters + 1+ judges (separate `queue_bp`)
 
-## Party System (AP Format)
-Debaters can form parties (max 3 members) to be guaranteed on the same team in AP rounds.
+## British Parliamentary (BP) Format
+4-team debate: OG (PM, DPM), OO (LO, DLO), CG (MG, GW), CO (MO, OW).
+
+### Speaker Flow
+PM → LO → DPM → DLO → MG → MO → GW → OW
+
+### Key Rules
+- Teams ranked 1st–4th (no binary winner)
+- Speaker scores 50–100 (no reply speeches)
+- 15-minute prep time; single motion entered by chair (no veto)
+- Only the chair judge can submit the ballot
+- Parties of exactly 2 members are supported; party of 3 is blocked (BP teams are 2-person)
+
+### Channel Structure (BP)
+Text, debate VC, og-prep VC, oo-prep VC, cg-prep VC, co-prep VC, judges VC, judges-text (8 channels total)
+
+### BP Ballot Flow
+1. Chair clicks "Submit Ballot" → `BPRankingView` (4 selects: rank each team 1st–4th)
+2. → `BPOGScoreModal` (PM + DPM scores)
+3. → `BPOOContinueView` → `BPOOScoreModal` (LO + DLO scores)
+4. → `BPCGContinueView` → `BPCGScoreModal` (MG + GW scores)
+5. → `BPCOContinueView` → `BPCOScoreModal` (MO + OW scores) → `finalize_bp_ballot()`
+
+### Storage (on DebateRound)
+- `debate_round.cg: Optional[DebateTeam]` — Closing Government team
+- `debate_round.co: Optional[DebateTeam]` — Closing Opposition team
+- `debate_round.bp_ballot: Optional[BPBallot]` — submitted BP ballot
+
+### Queue Storage
+- `matchmaking_cog.queue_bp: MatchmakingQueue` — separate queue (avoids threshold collision with AP/Standard)
+
+## Party System (AP / BP Format)
+Debaters can form parties to be guaranteed on the same team in AP or BP rounds.
 
 ### Commands
 - `/invite @user` — Create/extend a party and DM the invited user with accept/decline buttons
@@ -81,14 +115,15 @@ Debaters can form parties (max 3 members) to be guaranteed on the same team in A
 - `/leaveparty` — Host: disbands entire party + removes all from queue. Member: leaves party + queue.
 
 ### Party Queue Rules
-- Party host runs `/queue debater AP` to queue ALL party members together
+- Party host runs `/queue debater AP` or `/queue debater BP` to queue ALL party members together
+- Party of 3 cannot queue for BP (error: "BP teams have only 2 members")
 - Non-host party members cannot `/queue` individually (told to ask host)
 - Party host cannot queue for 1v1 or as judge while in a party
 - `/leave` by host removes all party members from queue (party preserved)
 - `/leave` by non-host member removes them from queue AND the party
 
 ### Party-Aware Allocation
-- `_build_allocation_units()` groups party members into indivisible units
+- `_build_allocation_units()` groups party members into indivisible units (reused for AP and BP)
 - Units are shuffled and placed on teams together (party members always on same side)
 - `max_party_size` parameter on `get_threshold_type()` prevents party of 3 from triggering double iron (2v2)
 
@@ -119,7 +154,7 @@ Any server member can request to watch a round. The target participant approves 
 
 ### Key Functions
 - `Matchmaking._find_member_active_round(member)` — returns DebateRound member is in, or None
-- `Matchmaking._is_member_in_queue(member)` — checks all queue lists (1v1 + AP debaters + judges)
+- `Matchmaking._is_member_in_queue(member)` — checks all queue lists (1v1 + AP + BP debaters + judges)
 - `Rounds.add_observer_to_round(debate_round, observer, guild)` — grants dynamic permissions on text + debate VC
 - `ObserveRequestView` (DM, timeout=300) — Accept/Decline buttons sent to the target participant
 
@@ -211,17 +246,20 @@ After the debate, the judge submits a ballot with position assignments, speaker 
 - Clicking it shows ephemeral confirmation dialog → channels deleted on confirm
 
 ### Views in cogs/rounds.py
-- `ChairJudgeControlView` (persistent, timeout=None) — 1v1: "Enter Motion" button; AP: 4-button motion input → "Release Motions" → "Veto In Progress..." → "Start Prep"
+- `ChairJudgeControlView` (persistent, timeout=None) — 1v1/BP: "Enter Motion" button; AP: 4-button motion input → "Release Motions" → "Veto In Progress..." → "Start Prep"
 - `APSingleMotionModal` (modal, AP only) — 2 fields: motion text + optional infoslide; one instance per motion A/B/C
 - `VetoView` (text channel, timeout=None) — Gov/Opp veto submission buttons
 - `VetoModal` (modal, AP only) — 3 text inputs (ranks 1-3 for each motion)
 - `CoinTossView` (text channel, timeout=120) — Gov Heads/Tails (row 0) + Opp Heads/Tails (row 1); auto-resolves randomly on timeout
-- `SubmitBallotView` (persistent, custom_id=`submit_ballot:{round_id}`)
-- `WinnerSelectView` (ephemeral, timeout=300)
+- `SubmitBallotView` (persistent, custom_id=`submit_ballot:{round_id}`) — BP: restricted to chair only, routes to BPRankingView
+- `WinnerSelectView` (ephemeral, timeout=300) — 1v1/AP only
 - `ScoreModal1v1` (modal, 1v1 only)
 - `GovAssignmentView` / `OppAssignmentView` (ephemeral, timeout=300, AP only)
 - `GovScoreModal` / `OppScoreModal` (modals, AP only)
 - `OppScoreContinueView` (ephemeral bridge, timeout=300)
+- `BPRankingView` (ephemeral, timeout=300, BP only) — 4 rank selects (OG/OO/CG/CO) + submit button
+- `BPOGScoreModal` / `BPOOScoreModal` / `BPCGScoreModal` / `BPCOScoreModal` (modals, BP only)
+- `BPOOContinueView` / `BPCGContinueView` / `BPCOContinueView` (ephemeral bridges, timeout=300, BP only)
 - `PostBallotRoundCompleteView` (persistent, custom_id=`post_ballot_complete:{round_id}`)
 - `ChannelDeletionConfirmView` (ephemeral, timeout=60)
 - `RateJudgeView` (DM, timeout=None)

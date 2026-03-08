@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Optional
 
-from utils.models import DebateRound, RoundType, SpeakerScore, Ballot, JudgeRating, BallotDraft
+from utils.models import DebateRound, RoundType, SpeakerScore, Ballot, JudgeRating, BallotDraft, BPBallot, BPBallotDraft
 from utils.embeds import EmbedBuilder
 from config import Config
 
@@ -162,21 +162,37 @@ class SubmitBallotView(discord.ui.View):
             )
             return
 
-        if debate_round.ballot is not None:
+        if debate_round.ballot is not None or debate_round.bp_ballot is not None:
             await interaction.response.send_message(
                 "A ballot has already been submitted for this round.", ephemeral=True
             )
             return
 
-        draft = BallotDraft(
-            ballot_view=self, debate_round=debate_round, judge=interaction.user
-        )
-        view = WinnerSelectView(draft)
-        await interaction.response.send_message(
-            "Select the winning side to begin the ballot.",
-            view=view,
-            ephemeral=True
-        )
+        if debate_round.round_type == RoundType.BP:
+            if interaction.user.id != debate_round.judges.chair.id:
+                await interaction.response.send_message(
+                    "Only the chair judge can submit the BP ballot.", ephemeral=True
+                )
+                return
+            bp_draft = BPBallotDraft(
+                ballot_view=self, debate_round=debate_round, judge=interaction.user
+            )
+            view = BPRankingView(bp_draft)
+            await interaction.response.send_message(
+                "Rank all four teams (1st to 4th) to begin the ballot.",
+                view=view,
+                ephemeral=True
+            )
+        else:
+            draft = BallotDraft(
+                ballot_view=self, debate_round=debate_round, judge=interaction.user
+            )
+            view = WinnerSelectView(draft)
+            await interaction.response.send_message(
+                "Select the winning side to begin the ballot.",
+                view=view,
+                ephemeral=True
+            )
 
 
 def _get_team_positions(team) -> list:
@@ -821,13 +837,19 @@ class RateJudgeModal(discord.ui.Modal):
                 pass
 
         # Send the debater the full ballot results
-        ballot_embed = EmbedBuilder.create_ballot_results_embed(self.debate_round)
+        if self.debate_round.round_type == RoundType.BP:
+            ballot_embed = EmbedBuilder.create_bp_ballot_results_embed(self.debate_round)
+        else:
+            ballot_embed = EmbedBuilder.create_ballot_results_embed(self.debate_round)
         await interaction.response.send_message(embed=ballot_embed)
 
-        # Check if all debaters have rated
-        all_debater_ids = {
-            m.id for m in self.debate_round.government.members + self.debate_round.opposition.members
-        }
+        # Check if all debaters have rated (include CG/CO for BP)
+        all_debaters = list(self.debate_round.government.members) + list(self.debate_round.opposition.members)
+        if self.debate_round.cg:
+            all_debaters += list(self.debate_round.cg.members)
+        if self.debate_round.co:
+            all_debaters += list(self.debate_round.co.members)
+        all_debater_ids = {m.id for m in all_debaters}
         if self.debate_round.rated_debater_ids >= all_debater_ids:
             # All debaters have rated — send aggregated ratings to judge
             await self.rounds_cog.send_judge_ratings(self.debate_round)
@@ -1295,6 +1317,8 @@ class ChairJudgeControlView(discord.ui.View):
         # Calculate prep duration and end timestamp
         if self.debate_round.round_type == RoundType.PM_LO:
             duration = Config.PREP_TIME_1V1
+        elif self.debate_round.round_type == RoundType.BP:
+            duration = Config.PREP_TIME_BP
         else:
             duration = Config.PREP_TIME_AP
 
@@ -1318,6 +1342,284 @@ class ChairJudgeControlView(discord.ui.View):
             self.rounds_cog.run_prep_timer(interaction.guild, self.debate_round, text_channel, duration)
         )
         self.debate_round._prep_task = task
+
+
+class BPRankingView(discord.ui.View):
+    """Ephemeral view for the chair to rank all 4 BP teams 1st–4th."""
+
+    TEAM_LABELS = [
+        ("og", "Opening Government (OG)"),
+        ("oo", "Opening Opposition (OO)"),
+        ("cg", "Closing Government (CG)"),
+        ("co", "Closing Opposition (CO)"),
+    ]
+
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+        self.selections = {}  # team_key → rank (int)
+
+        for team_key, team_label in self.TEAM_LABELS:
+            select = discord.ui.Select(
+                placeholder=f"Rank for {team_label}",
+                options=[discord.SelectOption(label=f"{r}", value=f"{r}") for r in range(1, 5)],
+                custom_id=f"bp_rank_{team_key}"
+            )
+            select.callback = self._make_rank_callback(team_key, select)
+            self.add_item(select)
+
+        self.submit_btn = discord.ui.Button(label="Submit Rankings", style=discord.ButtonStyle.primary)
+        self.submit_btn.callback = self._submit_callback
+        self.add_item(self.submit_btn)
+
+    def _make_rank_callback(self, team_key: str, select: discord.ui.Select):
+        async def callback(interaction: discord.Interaction):
+            val = int(interaction.data["values"][0])
+            self.selections[team_key] = val
+            for option in select.options:
+                option.default = (option.value == str(val))
+            select.placeholder = f"{['', '1st', '2nd', '3rd', '4th'][val]}: {dict(self.TEAM_LABELS)[team_key]}"
+            await interaction.response.edit_message(view=self)
+        return callback
+
+    async def _submit_callback(self, interaction: discord.Interaction):
+        if len(self.selections) < 4:
+            await interaction.response.send_message("Please rank all four teams.", ephemeral=True)
+            return
+        ranks = list(self.selections.values())
+        if sorted(ranks) != [1, 2, 3, 4]:
+            await interaction.response.send_message(
+                "Each rank (1, 2, 3, 4) must be used exactly once.", ephemeral=True
+            )
+            return
+        self.draft.rankings = dict(self.selections)
+        modal = BPOGScoreModal(self.draft)
+        await interaction.response.send_modal(modal)
+
+
+class BPOGScoreModal(discord.ui.Modal):
+    """Modal for entering OG (Opening Government) speaker scores."""
+
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(title="OG Scores — Opening Government")
+        self.draft = draft
+        og = draft.debate_round.government
+        positions = Config.BP_OG_POSITIONS
+
+        self.inputs = []
+        for i, member in enumerate(og.members):
+            pos = positions[i] if i < len(positions) else f"Speaker {i+1}"
+            inp = discord.ui.InputText(
+                label=f"{pos} ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.inputs.append((inp, pos, member))
+
+    async def callback(self, interaction: discord.Interaction):
+        scores = []
+        for inp, pos, member in self.inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {pos}. Enter a number between 50–100.", ephemeral=True
+                )
+                return
+            if not (50 <= score <= 100):
+                await interaction.response.send_message(
+                    f"Score for {pos} must be between 50–100 (got {score}).", ephemeral=True
+                )
+                return
+            scores.append(SpeakerScore(member=member, position_name=pos, score=score))
+        self.draft.og_scores = scores
+        await interaction.response.send_message(
+            "OG scores recorded. Click below to enter OO scores.",
+            view=BPOOContinueView(self.draft),
+            ephemeral=True
+        )
+
+
+class BPOOContinueView(discord.ui.View):
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+
+    @discord.ui.button(label="Continue to OO Scores", style=discord.ButtonStyle.primary)
+    async def continue_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(BPOOScoreModal(self.draft))
+
+
+class BPOOScoreModal(discord.ui.Modal):
+    """Modal for entering OO (Opening Opposition) speaker scores."""
+
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(title="OO Scores — Opening Opposition")
+        self.draft = draft
+        oo = draft.debate_round.opposition
+        positions = Config.BP_OO_POSITIONS
+
+        self.inputs = []
+        for i, member in enumerate(oo.members):
+            pos = positions[i] if i < len(positions) else f"Speaker {i+1}"
+            inp = discord.ui.InputText(
+                label=f"{pos} ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.inputs.append((inp, pos, member))
+
+    async def callback(self, interaction: discord.Interaction):
+        scores = []
+        for inp, pos, member in self.inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {pos}. Enter a number between 50–100.", ephemeral=True
+                )
+                return
+            if not (50 <= score <= 100):
+                await interaction.response.send_message(
+                    f"Score for {pos} must be between 50–100 (got {score}).", ephemeral=True
+                )
+                return
+            scores.append(SpeakerScore(member=member, position_name=pos, score=score))
+        self.draft.oo_scores = scores
+        await interaction.response.send_message(
+            "OO scores recorded. Click below to enter CG scores.",
+            view=BPCGContinueView(self.draft),
+            ephemeral=True
+        )
+
+
+class BPCGContinueView(discord.ui.View):
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+
+    @discord.ui.button(label="Continue to CG Scores", style=discord.ButtonStyle.primary)
+    async def continue_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(BPCGScoreModal(self.draft))
+
+
+class BPCGScoreModal(discord.ui.Modal):
+    """Modal for entering CG (Closing Government) speaker scores."""
+
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(title="CG Scores — Closing Government")
+        self.draft = draft
+        cg = draft.debate_round.cg
+        positions = Config.BP_CG_POSITIONS
+
+        self.inputs = []
+        for i, member in enumerate(cg.members):
+            pos = positions[i] if i < len(positions) else f"Speaker {i+1}"
+            inp = discord.ui.InputText(
+                label=f"{pos} ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.inputs.append((inp, pos, member))
+
+    async def callback(self, interaction: discord.Interaction):
+        scores = []
+        for inp, pos, member in self.inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {pos}. Enter a number between 50–100.", ephemeral=True
+                )
+                return
+            if not (50 <= score <= 100):
+                await interaction.response.send_message(
+                    f"Score for {pos} must be between 50–100 (got {score}).", ephemeral=True
+                )
+                return
+            scores.append(SpeakerScore(member=member, position_name=pos, score=score))
+        self.draft.cg_scores = scores
+        await interaction.response.send_message(
+            "CG scores recorded. Click below to enter CO scores.",
+            view=BPCOContinueView(self.draft),
+            ephemeral=True
+        )
+
+
+class BPCOContinueView(discord.ui.View):
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(timeout=300)
+        self.draft = draft
+
+    @discord.ui.button(label="Continue to CO Scores", style=discord.ButtonStyle.primary)
+    async def continue_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(BPCOScoreModal(self.draft))
+
+
+class BPCOScoreModal(discord.ui.Modal):
+    """Modal for entering CO (Closing Opposition) speaker scores and finalizing the ballot."""
+
+    def __init__(self, draft: BPBallotDraft):
+        super().__init__(title="CO Scores — Closing Opposition")
+        self.draft = draft
+        co = draft.debate_round.co
+        positions = Config.BP_CO_POSITIONS
+
+        self.inputs = []
+        for i, member in enumerate(co.members):
+            pos = positions[i] if i < len(positions) else f"Speaker {i+1}"
+            inp = discord.ui.InputText(
+                label=f"{pos} ({member.display_name})",
+                placeholder="50-100",
+                style=discord.InputTextStyle.short,
+                required=True
+            )
+            self.add_item(inp)
+            self.inputs.append((inp, pos, member))
+
+    async def callback(self, interaction: discord.Interaction):
+        scores = []
+        for inp, pos, member in self.inputs:
+            try:
+                score = int(inp.value.strip())
+            except ValueError:
+                await interaction.response.send_message(
+                    f"Invalid score for {pos}. Enter a number between 50–100.", ephemeral=True
+                )
+                return
+            if not (50 <= score <= 100):
+                await interaction.response.send_message(
+                    f"Score for {pos} must be between 50–100 (got {score}).", ephemeral=True
+                )
+                return
+            scores.append(SpeakerScore(member=member, position_name=pos, score=score))
+        self.draft.co_scores = scores
+
+        bp_ballot = BPBallot(
+            judge=self.draft.judge,
+            rankings=self.draft.rankings,
+            team_scores={
+                "og": self.draft.og_scores,
+                "oo": self.draft.oo_scores,
+                "cg": self.draft.cg_scores,
+                "co": scores,
+            }
+        )
+        error = bp_ballot.validate()
+        if error:
+            await interaction.response.send_message(f"Validation error: {error}", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self.draft.ballot_view.rounds_cog.finalize_bp_ballot(
+            interaction, self.draft.debate_round, bp_ballot, self.draft.ballot_view
+        )
 
 
 class Rounds(commands.Cog):
@@ -1443,23 +1745,57 @@ class Rounds(commands.Cog):
                 name=f"round-{round_id}-debate"
             )
 
-            # Gov prep voice (gov team only)
-            gov_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
-            for member in gov_members:
-                gov_overwrites[member] = allow_view_connect
-            gov_prep_vc = await category.create_voice_channel(
-                name=f"round-{round_id}-gov-prep",
-                overwrites=gov_overwrites
-            )
+            # Prep voice channels — BP gets 4 (og/oo/cg/co), others get 2 (gov/opp)
+            if debate_round.round_type == RoundType.BP:
+                og_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
+                for member in gov_members:
+                    og_overwrites[member] = allow_view_connect
+                gov_prep_vc = await category.create_voice_channel(
+                    name=f"round-{round_id}-og-prep",
+                    overwrites=og_overwrites
+                )
 
-            # Opp prep voice (opp team only)
-            opp_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
-            for member in opp_members:
-                opp_overwrites[member] = allow_view_connect
-            opp_prep_vc = await category.create_voice_channel(
-                name=f"round-{round_id}-opp-prep",
-                overwrites=opp_overwrites
-            )
+                oo_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
+                for member in opp_members:
+                    oo_overwrites[member] = allow_view_connect
+                opp_prep_vc = await category.create_voice_channel(
+                    name=f"round-{round_id}-oo-prep",
+                    overwrites=oo_overwrites
+                )
+
+                cg_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
+                for member in debate_round.cg.members:
+                    cg_overwrites[member] = allow_view_connect
+                cg_prep_vc = await category.create_voice_channel(
+                    name=f"round-{round_id}-cg-prep",
+                    overwrites=cg_overwrites
+                )
+
+                co_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
+                for member in debate_round.co.members:
+                    co_overwrites[member] = allow_view_connect
+                co_prep_vc = await category.create_voice_channel(
+                    name=f"round-{round_id}-co-prep",
+                    overwrites=co_overwrites
+                )
+            else:
+                # Gov prep voice (gov team only)
+                gov_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
+                for member in gov_members:
+                    gov_overwrites[member] = allow_view_connect
+                gov_prep_vc = await category.create_voice_channel(
+                    name=f"round-{round_id}-gov-prep",
+                    overwrites=gov_overwrites
+                )
+
+                # Opp prep voice (opp team only)
+                opp_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
+                for member in opp_members:
+                    opp_overwrites[member] = allow_view_connect
+                opp_prep_vc = await category.create_voice_channel(
+                    name=f"round-{round_id}-opp-prep",
+                    overwrites=opp_overwrites
+                )
 
             # Judge deliberation voice (judges only)
             judge_overwrites = {everyone_role: deny_all, guild.me: bot_perms}
@@ -1479,14 +1815,26 @@ class Rounds(commands.Cog):
                 overwrites=judge_text_overwrites
             )
 
-            debate_round.channel_ids = {
-                "text": text_channel.id,
-                "debate": debate_vc.id,
-                "gov_prep": gov_prep_vc.id,
-                "opp_prep": opp_prep_vc.id,
-                "judges": judges_vc.id,
-                "judges_text": judges_text_channel.id,
-            }
+            if debate_round.round_type == RoundType.BP:
+                debate_round.channel_ids = {
+                    "text": text_channel.id,
+                    "debate": debate_vc.id,
+                    "gov_prep": gov_prep_vc.id,   # og-prep
+                    "opp_prep": opp_prep_vc.id,   # oo-prep
+                    "cg_prep": cg_prep_vc.id,
+                    "co_prep": co_prep_vc.id,
+                    "judges": judges_vc.id,
+                    "judges_text": judges_text_channel.id,
+                }
+            else:
+                debate_round.channel_ids = {
+                    "text": text_channel.id,
+                    "debate": debate_vc.id,
+                    "gov_prep": gov_prep_vc.id,
+                    "opp_prep": opp_prep_vc.id,
+                    "judges": judges_vc.id,
+                    "judges_text": judges_text_channel.id,
+                }
 
             # Track as active round
             matchmaking_cog.add_active_round(debate_round)
@@ -1568,6 +1916,22 @@ class Rounds(commands.Cog):
                     await member.move_to(opp_prep_vc)
             except Exception:
                 pass
+
+        if debate_round.round_type == RoundType.BP:
+            cg_prep_vc = guild.get_channel(debate_round.channel_ids["cg_prep"])
+            co_prep_vc = guild.get_channel(debate_round.channel_ids["co_prep"])
+            for member in debate_round.cg.members:
+                try:
+                    if member.voice:
+                        await member.move_to(cg_prep_vc)
+                except Exception:
+                    pass
+            for member in debate_round.co.members:
+                try:
+                    if member.voice:
+                        await member.move_to(co_prep_vc)
+                except Exception:
+                    pass
 
         for member in debate_round.judges.get_all_judges():
             try:
@@ -1783,23 +2147,26 @@ class Rounds(commands.Cog):
 
     async def send_prep_dms(self, debate_round: DebateRound, end_timestamp: int):
         """DM each debater with their side, the motion, and prep end time."""
-        for member in debate_round.government.members:
-            try:
-                embed = EmbedBuilder.create_prep_dm_embed(
-                    debate_round, "Government", end_timestamp
-                )
-                await member.send(embed=embed)
-            except discord.Forbidden:
-                pass  # DMs disabled
+        if debate_round.round_type == RoundType.BP:
+            team_sides = [
+                (debate_round.government.members, "Opening Government (OG)"),
+                (debate_round.opposition.members, "Opening Opposition (OO)"),
+                (debate_round.cg.members, "Closing Government (CG)"),
+                (debate_round.co.members, "Closing Opposition (CO)"),
+            ]
+        else:
+            team_sides = [
+                (debate_round.government.members, "Government"),
+                (debate_round.opposition.members, "Opposition"),
+            ]
 
-        for member in debate_round.opposition.members:
-            try:
-                embed = EmbedBuilder.create_prep_dm_embed(
-                    debate_round, "Opposition", end_timestamp
-                )
-                await member.send(embed=embed)
-            except discord.Forbidden:
-                pass  # DMs disabled
+        for members, side in team_sides:
+            for member in members:
+                try:
+                    embed = EmbedBuilder.create_prep_dm_embed(debate_round, side, end_timestamp)
+                    await member.send(embed=embed)
+                except discord.Forbidden:
+                    pass
 
     async def finalize_ballot(
         self,
@@ -1863,9 +2230,65 @@ class Rounds(commands.Cog):
 
         logger.info(f"Ballot finalized for round {debate_round.round_id}")
 
+    async def finalize_bp_ballot(
+        self,
+        interaction: discord.Interaction,
+        debate_round: DebateRound,
+        bp_ballot: BPBallot,
+        ballot_view
+    ):
+        """Finalize a BP ballot: store, DM chair, DM all debaters, post in channel."""
+        debate_round.bp_ballot = bp_ballot
+
+        # Cancel prep timer if still running
+        if hasattr(debate_round, '_prep_task') and debate_round._prep_task:
+            debate_round._prep_task.cancel()
+
+        # Disable the Submit Ballot button
+        ballot_view.clear_items()
+        btn = discord.ui.Button(
+            label="Ballot Submitted",
+            style=discord.ButtonStyle.secondary,
+            disabled=True,
+            custom_id=f"submit_ballot:{ballot_view.round_id}"
+        )
+        ballot_view.add_item(btn)
+
+        text_channel = interaction.guild.get_channel(debate_round.channel_ids.get("text"))
+
+        # DM the chair with full ballot results
+        try:
+            ballot_embed = EmbedBuilder.create_bp_ballot_results_embed(debate_round)
+            await bp_ballot.judge.send(embed=ballot_embed)
+        except discord.Forbidden:
+            pass
+
+        # DM all debaters with "ballot ready" + Rate Judge button
+        all_debaters = (list(debate_round.government.members) + list(debate_round.opposition.members)
+                        + list(debate_round.cg.members) + list(debate_round.co.members))
+        for debater in all_debaters:
+            try:
+                embed = EmbedBuilder.create_ballot_ready_dm_embed(debate_round)
+                rate_view = RateJudgeView(self, debate_round, debater)
+                rate_view.message = await debater.send(embed=embed, view=rate_view)
+            except discord.Forbidden:
+                pass
+
+        # Post ballot submitted embed in text channel
+        if text_channel:
+            embed = EmbedBuilder.create_ballot_submitted_embed(debate_round.round_id)
+            await text_channel.send(embed=embed)
+
+            complete_view = PostBallotRoundCompleteView(self, debate_round.round_id)
+            self.bot.add_view(complete_view)
+            channel_embed = EmbedBuilder.create_post_ballot_channel_embed(debate_round.round_id)
+            await text_channel.send(embed=channel_embed, view=complete_view)
+
+        logger.info(f"BP ballot finalized for round {debate_round.round_id}")
+
     async def send_judge_ratings(self, debate_round: DebateRound):
         """Send aggregated debater ratings to the judge."""
-        judge = debate_round.ballot.judge
+        judge = debate_round.bp_ballot.judge if debate_round.bp_ballot else debate_round.ballot.judge
         try:
             embed = EmbedBuilder.create_judge_ratings_embed(debate_round, debate_round.judge_ratings)
             await judge.send(embed=embed)
@@ -1881,7 +2304,11 @@ class Rounds(commands.Cog):
             # Auto-move debaters from prep VCs to debate VC
             debate_vc = guild.get_channel(debate_round.channel_ids.get("debate"))
             if debate_vc:
-                all_debaters = debate_round.government.members + debate_round.opposition.members
+                all_debaters = list(debate_round.government.members) + list(debate_round.opposition.members)
+                if debate_round.cg:
+                    all_debaters += list(debate_round.cg.members)
+                if debate_round.co:
+                    all_debaters += list(debate_round.co.members)
                 for member in all_debaters:
                     try:
                         if member.voice:
@@ -1937,7 +2364,8 @@ class Rounds(commands.Cog):
             "pm_lo": "PM vs LO",
             "double_iron": "Double Iron",
             "single_iron": "Single Iron",
-            "standard": "Standard"
+            "standard": "Standard",
+            "bp": "British Parliamentary",
         }
         return labels.get(debate_round.round_type.value, "Debate")
 

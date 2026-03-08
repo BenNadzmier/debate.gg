@@ -12,6 +12,7 @@ from utils.models import (
     MatchmakingQueue, DebateRound, DebateTeam, JudgePanel,
     TeamType, RoundType, FormatType, Party
 )
+
 from utils.embeds import EmbedBuilder
 
 
@@ -198,9 +199,10 @@ class LobbyView(discord.ui.View):
         """Handle leave queue button press."""
         removed_1v1 = self.cog.queue_1v1.remove_user(interaction.user)
         removed_ap = self.cog.queue_ap.remove_user(interaction.user)
+        removed_bp = self.cog.queue_bp.remove_user(interaction.user)
         self.cog._cancel_queue_timeout(interaction.user.id)
 
-        if removed_1v1 or removed_ap:
+        if removed_1v1 or removed_ap or removed_bp:
             await interaction.response.send_message("You have left the queue.", ephemeral=True)
             await self.cog.update_lobby_display()
             await self.cog.check_matchmaking_threshold()
@@ -215,6 +217,7 @@ class Matchmaking(commands.Cog):
         self.bot = bot
         self.queue_1v1 = MatchmakingQueue(format_type=FormatType.ONE_V_ONE)
         self.queue_ap = MatchmakingQueue(format_type=FormatType.AP)
+        self.queue_bp = MatchmakingQueue(format_type=FormatType.BP)
         self.lobby_message: Optional[discord.Message] = None
         self.current_round: Optional[DebateRound] = None
         self.round_counter = 0
@@ -229,7 +232,11 @@ class Matchmaking(commands.Cog):
 
     def _get_queue(self, format_name: str) -> MatchmakingQueue:
         """Get the queue for a given format."""
-        return self.queue_1v1 if format_name == "1v1" else self.queue_ap
+        if format_name == "1v1":
+            return self.queue_1v1
+        elif format_name == "BP":
+            return self.queue_bp
+        return self.queue_ap
 
     def _get_max_party_size(self, queue: MatchmakingQueue) -> int:
         """Get the size of the largest party among queued debaters."""
@@ -260,7 +267,9 @@ class Matchmaking(commands.Cog):
         return (member in self.queue_1v1.debaters or
                 member in self.queue_1v1.judges or
                 member in self.queue_ap.debaters or
-                member in self.queue_ap.judges)
+                member in self.queue_ap.judges or
+                member in self.queue_bp.debaters or
+                member in self.queue_bp.judges)
 
     def _find_member_active_round(self, member: discord.Member):
         """Return the active DebateRound the member is in, or None."""
@@ -286,11 +295,13 @@ class Matchmaking(commands.Cog):
         await asyncio.sleep(900)  # 15 minutes
 
         # Guard against race condition where task was cancelled but not yet GC'd
-        if not (self.queue_1v1.is_in_queue(member) or self.queue_ap.is_in_queue(member)):
+        if not (self.queue_1v1.is_in_queue(member) or self.queue_ap.is_in_queue(member)
+                or self.queue_bp.is_in_queue(member)):
             return
 
         self.queue_1v1.remove_user(member)
         self.queue_ap.remove_user(member)
+        self.queue_bp.remove_user(member)
         self.queue_timeouts.pop(member.id, None)
 
         # Party handling
@@ -303,6 +314,7 @@ class Matchmaking(commands.Cog):
                     if m.id != member.id:
                         self.queue_1v1.remove_user(m)
                         self.queue_ap.remove_user(m)
+                        self.queue_bp.remove_user(m)
                         self._cancel_queue_timeout(m.id)
                         try:
                             await m.send(embed=EmbedBuilder.create_error_embed(
@@ -370,7 +382,7 @@ class Matchmaking(commands.Cog):
                 except:
                     pass
 
-            embed = EmbedBuilder.create_lobby_embed(self.queue_1v1, self.queue_ap)
+            embed = EmbedBuilder.create_lobby_embed(self.queue_1v1, self.queue_ap, self.queue_bp)
             view = LobbyView(self)
             self.lobby_message = await lobby_channel.send(embed=embed, view=view)
             logger.info("Lobby embed created successfully")
@@ -385,7 +397,7 @@ class Matchmaking(commands.Cog):
             return
 
         try:
-            embed = EmbedBuilder.create_lobby_embed(self.queue_1v1, self.queue_ap)
+            embed = EmbedBuilder.create_lobby_embed(self.queue_1v1, self.queue_ap, self.queue_bp)
             view = LobbyView(self)
             await self.lobby_message.edit(embed=embed, view=view)
         except discord.NotFound:
@@ -398,8 +410,8 @@ class Matchmaking(commands.Cog):
         if self.current_round:
             return
 
-        for format_label, queue in [("1v1", self.queue_1v1), ("AP", self.queue_ap)]:
-            max_party_size = self._get_max_party_size(queue) if format_label == "AP" else 1
+        for format_label, queue in [("1v1", self.queue_1v1), ("AP", self.queue_ap), ("BP", self.queue_bp)]:
+            max_party_size = self._get_max_party_size(queue) if format_label in ("AP", "BP") else 1
             round_type = queue.get_threshold_type(max_party_size)
             if round_type:
                 # Auto-create round with random allocation
@@ -505,6 +517,35 @@ class Matchmaking(commands.Cog):
             gov_team.members = gov_members
             opp_team.members = opp_members
 
+        elif round_type == RoundType.BP:
+            # BP: party-aware allocation into 4 teams of 2
+            units = self._build_allocation_units(debaters)
+            random.shuffle(units)
+
+            # Flatten units into ordered list (party members stay consecutive)
+            ordered = []
+            for unit in units:
+                ordered.extend(unit)
+
+            og_team = DebateTeam("Opening Government", TeamType.IRON)
+            oo_team = DebateTeam("Opening Opposition", TeamType.IRON)
+            cg_team = DebateTeam("Closing Government", TeamType.IRON)
+            co_team = DebateTeam("Closing Opposition", TeamType.IRON)
+            og_team.members = ordered[0:2]
+            oo_team.members = ordered[2:4]
+            cg_team.members = ordered[4:6]
+            co_team.members = ordered[6:8]
+
+            return DebateRound(
+                round_id=self.round_counter,
+                round_type=round_type,
+                government=og_team,
+                opposition=oo_team,
+                cg=cg_team,
+                co=co_team,
+                judges=judge_panel
+            )
+
         else:  # STANDARD (3v3)
             units = self._build_allocation_units(debaters)
             random.shuffle(units)
@@ -547,7 +588,7 @@ class Matchmaking(commands.Cog):
         debate_format: str = discord.Option(
             name="format",
             description="Debate format",
-            choices=["1v1", "AP"],
+            choices=["1v1", "AP", "BP"],
             required=True
         )
     ):
@@ -569,13 +610,14 @@ class Matchmaking(commands.Cog):
                     )
                     return
 
-                # Party host: enforce AP debater only
+                # Party host: enforce AP or BP (2-member only for BP) debater only
                 if debate_format == "1v1":
                     await ctx.respond(
                         embed=EmbedBuilder.create_error_embed(
                             "Party Not Supported",
-                            "Parties are only supported in AP format. Use `/leaveparty` to disband first."
-                        )
+                            "Parties are only supported in AP and BP formats. Use `/leaveparty` to disband first."
+                        ),
+                        ephemeral=True
                     )
                     return
 
@@ -584,23 +626,37 @@ class Matchmaking(commands.Cog):
                         embed=EmbedBuilder.create_error_embed(
                             "Party Host",
                             "As a party host, you can only queue as a debater. Use `/leaveparty` to disband first."
-                        )
+                        ),
+                        ephemeral=True
                     )
                     return
 
-                # Queue all party members as debaters in AP
-                queue = self.queue_ap
-                other_queue = self.queue_1v1
+                if debate_format == "BP" and party.size > 2:
+                    await ctx.respond(
+                        embed=EmbedBuilder.create_error_embed(
+                            "Party Too Large for BP",
+                            "BP teams have only 2 members. Reduce your party to 2 before queuing for BP."
+                        ),
+                        ephemeral=True
+                    )
+                    return
+
+                # Queue all party members as debaters in the selected format
+                queue = self.queue_bp if debate_format == "BP" else self.queue_ap
+                format_display = debate_format
 
                 for member in party.members:
-                    other_queue.remove_user(member)
+                    # Remove from all other queues
+                    for q in [self.queue_1v1, self.queue_ap, self.queue_bp]:
+                        if q != queue:
+                            q.remove_user(member)
                     queue.add_debater(member)
                     self._start_queue_timeout(member)
 
                 await ctx.respond(
                     embed=EmbedBuilder.create_success_embed(
-                        f"Party Joined AP Queue",
-                        f"You and your party ({party.size} members) have joined the AP debater queue.\n"
+                        f"Party Joined {format_display} Queue",
+                        f"You and your party ({party.size} members) have joined the {format_display} debater queue.\n"
                         f"**Debaters:** {queue.debater_count()} | **Judges:** {queue.judge_count()}"
                     ),
                     ephemeral=True
@@ -611,7 +667,7 @@ class Matchmaking(commands.Cog):
                             await member.send(
                                 embed=EmbedBuilder.create_success_embed(
                                     "Added to Queue",
-                                    f"Your party host **{ctx.author.display_name}** has queued your party for AP.\n"
+                                    f"Your party host **{ctx.author.display_name}** has queued your party for {format_display}.\n"
                                     f"You'll be matched when there are enough players."
                                 )
                             )
@@ -623,10 +679,11 @@ class Matchmaking(commands.Cog):
 
         # Standard (non-party) queue flow
         queue = self._get_queue(debate_format)
-        other_queue = self.queue_ap if debate_format == "1v1" else self.queue_1v1
 
-        # Remove from the other format's queue if present
-        other_queue.remove_user(ctx.author)
+        # Remove from all other queues
+        for q in [self.queue_1v1, self.queue_ap, self.queue_bp]:
+            if q != queue:
+                q.remove_user(ctx.author)
 
         # Add user to appropriate queue
         if role == "debater":
@@ -635,7 +692,7 @@ class Matchmaking(commands.Cog):
             success = queue.add_judge(ctx.author)
         self._start_queue_timeout(ctx.author)
 
-        format_display = "1v1" if debate_format == "1v1" else "AP"
+        format_display = debate_format
 
         if success:
             await ctx.respond(
@@ -679,6 +736,8 @@ class Matchmaking(commands.Cog):
                         removed = True
                     if self.queue_ap.remove_user(member):
                         removed = True
+                    if self.queue_bp.remove_user(member):
+                        removed = True
                     self._cancel_queue_timeout(member.id)
                 if removed:
                     await ctx.respond(
@@ -709,9 +768,10 @@ class Matchmaking(commands.Cog):
 
         removed_1v1 = self.queue_1v1.remove_user(ctx.author)
         removed_ap = self.queue_ap.remove_user(ctx.author)
+        removed_bp = self.queue_bp.remove_user(ctx.author)
         self._cancel_queue_timeout(ctx.author.id)
 
-        if removed_1v1 or removed_ap:
+        if removed_1v1 or removed_ap or removed_bp:
             await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(
                     "Left Queue",
@@ -739,6 +799,7 @@ class Matchmaking(commands.Cog):
         """Clear the entire queue."""
         self.queue_1v1.clear()
         self.queue_ap.clear()
+        self.queue_bp.clear()
         await self.update_lobby_display()
         await ctx.respond(
             embed=EmbedBuilder.create_success_embed(
@@ -873,7 +934,10 @@ class Matchmaking(commands.Cog):
             return
 
         party = self.parties[host_id]
-        in_queue = any(m in self.queue_ap.debaters for m in party.members)
+        in_queue = any(
+            m in self.queue_ap.debaters or m in self.queue_bp.debaters
+            for m in party.members
+        )
         embed = EmbedBuilder.create_party_status_embed(party, in_queue)
         await ctx.respond(embed=embed)
 
@@ -902,6 +966,7 @@ class Matchmaking(commands.Cog):
             for member in party.members:
                 self.queue_1v1.remove_user(member)
                 self.queue_ap.remove_user(member)
+                self.queue_bp.remove_user(member)
             self._disband_party(host_id)
 
             await ctx.respond(
@@ -916,6 +981,7 @@ class Matchmaking(commands.Cog):
             self.member_to_party.pop(ctx.author.id, None)
             self.queue_1v1.remove_user(ctx.author)
             self.queue_ap.remove_user(ctx.author)
+            self.queue_bp.remove_user(ctx.author)
 
             await ctx.respond(
                 embed=EmbedBuilder.create_success_embed(

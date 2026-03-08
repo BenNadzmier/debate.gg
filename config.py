@@ -21,6 +21,7 @@ class Config:
     # Prep Time (seconds)
     PREP_TIME_1V1 = 15 * 60   # 15 minutes
     PREP_TIME_AP = 30 * 60    # 30 minutes
+    PREP_TIME_BP = 15 * 60    # 15 minutes
 
     # Debate Settings
     TEAM_POSITIONS = {
@@ -37,6 +38,12 @@ class Config:
         "gov": ["Prime Minister"],
         "opp": ["Leader of Opposition"]
     }
+
+    # BP position names per team (index 0 = first speaker, index 1 = second speaker)
+    BP_OG_POSITIONS = ["Prime Minister", "Deputy Prime Minister"]
+    BP_OO_POSITIONS = ["Leader of Opposition", "Deputy Leader of Opposition"]
+    BP_CG_POSITIONS = ["Member of Government", "Government Whip"]
+    BP_CO_POSITIONS = ["Member of Opposition", "Opposition Whip"]
 
     JUDGE_ROLES = ["Chair", "Panelist"]
 

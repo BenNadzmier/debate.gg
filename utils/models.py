@@ -17,12 +17,14 @@ class RoundType(Enum):
     DOUBLE_IRON = "double_iron"  # 5 people: 2v2 + 1 judge
     SINGLE_IRON = "single_iron"  # 6 people: 3v2 or 2v3 + 1 judge
     STANDARD = "standard"        # 7+ people: 3v3 + judges
+    BP = "bp"                    # 9+ people: 8 debaters (4 teams of 2) + 1+ judges
 
 
 class FormatType(Enum):
     """Debate format types."""
     ONE_V_ONE = "1v1"
     AP = "ap"
+    BP = "bp"
 
 
 @dataclass
@@ -215,6 +217,33 @@ class BallotDraft:
 
 
 @dataclass
+class BPBallot:
+    """A judge's ballot for a BP round (rankings + per-speaker scores)."""
+    judge: discord.Member
+    rankings: dict  # "og"/"oo"/"cg"/"co" → rank (1-4)
+    team_scores: dict  # "og"/"oo"/"cg"/"co" → List[SpeakerScore]
+
+    def validate(self) -> Optional[str]:
+        ranks = list(self.rankings.values())
+        if sorted(ranks) != [1, 2, 3, 4]:
+            return "Rankings must assign each of 1st, 2nd, 3rd, 4th exactly once."
+        return None
+
+
+@dataclass
+class BPBallotDraft:
+    """Accumulates BP ballot data across the multi-step ballot flow."""
+    ballot_view: Any  # SubmitBallotView reference
+    debate_round: 'DebateRound'
+    judge: discord.Member
+    rankings: dict = field(default_factory=dict)           # "og"/"oo"/"cg"/"co" → rank (1-4)
+    og_scores: List['SpeakerScore'] = field(default_factory=list)
+    oo_scores: List['SpeakerScore'] = field(default_factory=list)
+    cg_scores: List['SpeakerScore'] = field(default_factory=list)
+    co_scores: List['SpeakerScore'] = field(default_factory=list)
+
+
+@dataclass
 class DebateRound:
     """Represents a complete debate round."""
     round_id: int
@@ -234,6 +263,9 @@ class DebateRound:
     category_id: Optional[int] = None
     channel_ids: dict = field(default_factory=dict)
     ballot: Optional['Ballot'] = None
+    bp_ballot: Optional['BPBallot'] = None
+    cg: Optional['DebateTeam'] = None                       # BP: Closing Government
+    co: Optional['DebateTeam'] = None                       # BP: Closing Opposition
     judge_ratings: List['JudgeRating'] = field(default_factory=list)
     rated_debater_ids: set = field(default_factory=set)
     observers: List[discord.Member] = field(default_factory=list)
@@ -243,6 +275,10 @@ class DebateRound:
         participants = []
         participants.extend(self.government.members)
         participants.extend(self.opposition.members)
+        if self.cg:
+            participants.extend(self.cg.members)
+        if self.co:
+            participants.extend(self.co.members)
         participants.extend(self.judges.get_all_judges())
         return participants
 
@@ -253,6 +289,12 @@ class DebateRound:
             roles[member] = "debater"
         for member in self.opposition.members:
             roles[member] = "debater"
+        if self.cg:
+            for member in self.cg.members:
+                roles[member] = "debater"
+        if self.co:
+            for member in self.co.members:
+                roles[member] = "debater"
         for judge in self.judges.get_all_judges():
             roles[judge] = "judge"
         return roles
@@ -398,6 +440,11 @@ class MatchmakingQueue:
             # 1v1: 2 debaters + 1 judge
             if debaters >= 2 and judges >= 1:
                 return RoundType.PM_LO
+            return None
+        elif self.format_type == FormatType.BP:
+            # BP: 8 debaters + 1 judge (4 teams of 2)
+            if debaters >= 8 and judges >= 1:
+                return RoundType.BP
             return None
         else:
             # AP format — check from largest round type down

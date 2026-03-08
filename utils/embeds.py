@@ -14,8 +14,8 @@ class EmbedBuilder:
     COLOR_OPP = 0xE74C3C  # Red for Opposition
 
     @staticmethod
-    def create_lobby_embed(queue_1v1: MatchmakingQueue, queue_ap: MatchmakingQueue) -> discord.Embed:
-        """Create the lobby embed showing both format queues."""
+    def create_lobby_embed(queue_1v1: MatchmakingQueue, queue_ap: MatchmakingQueue, queue_bp: MatchmakingQueue) -> discord.Embed:
+        """Create the lobby embed showing all format queues."""
         embed = discord.Embed(
             title="Debate Matchmaking Lobby",
             description="Use `/queue` to join a format. Use `/guide` for help.",
@@ -37,6 +37,15 @@ class EmbedBuilder:
         embed.add_field(
             name="AP Format (Asian Parliamentary)",
             value=f"{members_ap}\n{status_ap}",
+            inline=False
+        )
+
+        # BP section
+        members_bp = EmbedBuilder._format_queue_members(queue_bp)
+        status_bp = EmbedBuilder._get_format_status(queue_bp)
+        embed.add_field(
+            name="BP Format (British Parliamentary)",
+            value=f"{members_bp}\n{status_bp}",
             inline=False
         )
 
@@ -70,6 +79,7 @@ class EmbedBuilder:
                 RoundType.DOUBLE_IRON: "Double Iron (2v2)",
                 RoundType.SINGLE_IRON: "Single Iron (3v2)",
                 RoundType.STANDARD: "Standard (3v3)",
+                RoundType.BP: "British Parliamentary",
             }
             return f"**Ready for {labels[threshold]}!**"
 
@@ -78,6 +88,9 @@ class EmbedBuilder:
 
         if queue.format_type == FormatType.ONE_V_ONE:
             need_d = max(0, 2 - debaters)
+            need_j = max(0, 1 - judges)
+        elif queue.format_type == FormatType.BP:
+            need_d = max(0, 8 - debaters)
             need_j = max(0, 1 - judges)
         else:
             need_d = max(0, 4 - debaters)
@@ -161,10 +174,22 @@ class EmbedBuilder:
         )
 
         embed.add_field(
-            name="Party System (AP)",
+            name="BP Format (British Parliamentary)",
             value=(
-                "Form a party to guarantee you and your friends are placed on the same team in AP rounds.\n\n"
-                "`/invite @user` — Invite someone to your party (max 3 members)\n"
+                "A 4-team debate: Opening Gov (OG), Opening Opp (OO), Closing Gov (CG), Closing Opp (CO).\n"
+                "**Requires:** 8 debaters + 1+ judges\n"
+                "**Speaker order:** PM → LO → DPM → DLO → MG → MO → GW → OW\n"
+                "Teams ranked 1st–4th. No vetoes. 15-minute prep.\n\n"
+                "Parties of 2 are supported — party members are guaranteed the same team."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Party System (AP / BP)",
+            value=(
+                "Form a party to guarantee you and your friends are placed on the same team in AP or BP rounds.\n\n"
+                "`/invite @user` — Invite someone to your party (max 3 for AP, max 2 for BP)\n"
                 "`/party` — View your current party and members\n"
                 "`/leaveparty` — Leave or disband your party\n\n"
                 "The party host queues for everyone using `/queue`."
@@ -212,19 +237,41 @@ class EmbedBuilder:
         )
 
         # Show team allocation
-        gov_text = EmbedBuilder._format_team_text(debate_round.government)
-        embed.add_field(
-            name=f"Government ({debate_round.government.team_type.value.title()})",
-            value=gov_text,
-            inline=True
-        )
-
-        opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
-        embed.add_field(
-            name=f"Opposition ({debate_round.opposition.team_type.value.title()})",
-            value=opp_text,
-            inline=True
-        )
+        if debate_round.cg:  # BP: 4 teams
+            embed.add_field(
+                name="Opening Government (OG)",
+                value=EmbedBuilder._format_team_text(debate_round.government),
+                inline=True
+            )
+            embed.add_field(
+                name="Opening Opposition (OO)",
+                value=EmbedBuilder._format_team_text(debate_round.opposition),
+                inline=True
+            )
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+            embed.add_field(
+                name="Closing Government (CG)",
+                value=EmbedBuilder._format_team_text(debate_round.cg),
+                inline=True
+            )
+            embed.add_field(
+                name="Closing Opposition (CO)",
+                value=EmbedBuilder._format_team_text(debate_round.co),
+                inline=True
+            )
+        else:
+            gov_text = EmbedBuilder._format_team_text(debate_round.government)
+            embed.add_field(
+                name=f"Government ({debate_round.government.team_type.value.title()})",
+                value=gov_text,
+                inline=True
+            )
+            opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
+            embed.add_field(
+                name=f"Opposition ({debate_round.opposition.team_type.value.title()})",
+                value=opp_text,
+                inline=True
+            )
 
         embed.add_field(name="\u200b", value="\u200b", inline=False)
 
@@ -284,19 +331,25 @@ class EmbedBuilder:
         else:
             embed.description = "*Waiting for chair judge to enter the motion...*"
 
-        gov_text = EmbedBuilder._format_team_text(debate_round.government)
-        embed.add_field(
-            name=f"Government ({debate_round.government.team_type.value.title()})",
-            value=gov_text,
-            inline=True
-        )
-
-        opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
-        embed.add_field(
-            name=f"Opposition ({debate_round.opposition.team_type.value.title()})",
-            value=opp_text,
-            inline=True
-        )
+        if debate_round.cg:  # BP: 4 teams
+            embed.add_field(name="Opening Government (OG)", value=EmbedBuilder._format_team_text(debate_round.government), inline=True)
+            embed.add_field(name="Opening Opposition (OO)", value=EmbedBuilder._format_team_text(debate_round.opposition), inline=True)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+            embed.add_field(name="Closing Government (CG)", value=EmbedBuilder._format_team_text(debate_round.cg), inline=True)
+            embed.add_field(name="Closing Opposition (CO)", value=EmbedBuilder._format_team_text(debate_round.co), inline=True)
+        else:
+            gov_text = EmbedBuilder._format_team_text(debate_round.government)
+            embed.add_field(
+                name=f"Government ({debate_round.government.team_type.value.title()})",
+                value=gov_text,
+                inline=True
+            )
+            opp_text = EmbedBuilder._format_team_text(debate_round.opposition)
+            embed.add_field(
+                name=f"Opposition ({debate_round.opposition.team_type.value.title()})",
+                value=opp_text,
+                inline=True
+            )
 
         embed.add_field(name="\u200b", value="\u200b", inline=False)
 
@@ -348,7 +401,7 @@ class EmbedBuilder:
     @staticmethod
     def create_prep_started_embed(debate_round, end_timestamp: int) -> discord.Embed:
         """Create embed shown when prep time starts."""
-        prep_minutes = 15 if debate_round.round_type == RoundType.PM_LO else 30
+        prep_minutes = 30 if debate_round.round_type not in (RoundType.PM_LO, RoundType.BP) else 15
         embed = discord.Embed(
             title="Prep Time Started!",
             description=(
@@ -359,16 +412,15 @@ class EmbedBuilder:
             ),
             color=EmbedBuilder.COLOR_WARNING
         )
-        embed.add_field(
-            name="Government",
-            value="Join the **gov-prep** voice channel",
-            inline=True
-        )
-        embed.add_field(
-            name="Opposition",
-            value="Join the **opp-prep** voice channel",
-            inline=True
-        )
+        if debate_round.round_type == RoundType.BP:
+            embed.add_field(name="Opening Government", value="Join the **og-prep** voice channel", inline=True)
+            embed.add_field(name="Opening Opposition", value="Join the **oo-prep** voice channel", inline=True)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+            embed.add_field(name="Closing Government", value="Join the **cg-prep** voice channel", inline=True)
+            embed.add_field(name="Closing Opposition", value="Join the **co-prep** voice channel", inline=True)
+        else:
+            embed.add_field(name="Government", value="Join the **gov-prep** voice channel", inline=True)
+            embed.add_field(name="Opposition", value="Join the **opp-prep** voice channel", inline=True)
         return embed
 
     @staticmethod
@@ -387,7 +439,7 @@ class EmbedBuilder:
     @staticmethod
     def create_prep_dm_embed(debate_round, side: str, end_timestamp: int) -> discord.Embed:
         """Create a DM embed sent to debaters when prep starts."""
-        prep_minutes = 15 if debate_round.round_type == RoundType.PM_LO else 30
+        prep_minutes = 30 if debate_round.round_type not in (RoundType.PM_LO, RoundType.BP) else 15
         desc = f"**Side:** {side}\n**Motion:** {debate_round.motion}\n"
         if debate_round.infoslide:
             desc += f"\n**Infoslide:**\n{debate_round.infoslide}\n"
@@ -783,6 +835,41 @@ class EmbedBuilder:
             description=desc,
             color=EmbedBuilder.COLOR_PRIMARY
         )
+
+    @staticmethod
+    def create_bp_ballot_results_embed(debate_round) -> discord.Embed:
+        """Create full BP ballot results embed showing team rankings and speaker scores."""
+        bp_ballot = debate_round.bp_ballot
+        embed = discord.Embed(
+            title=f"Round {debate_round.round_id} — BP Ballot Results",
+            description=f"**Motion:** {debate_round.motion}",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        team_info = {
+            "og": "Opening Government",
+            "oo": "Opening Opposition",
+            "cg": "Closing Government",
+            "co": "Closing Opposition",
+        }
+        rank_labels = {1: "🥇 1st", 2: "🥈 2nd", 3: "🥉 3rd", 4: "4th"}
+
+        # Sort teams by rank so results display in order
+        sorted_teams = sorted(bp_ballot.rankings.items(), key=lambda x: x[1])
+        for team_key, rank in sorted_teams:
+            scores = bp_ballot.team_scores.get(team_key, [])
+            lines = [f"**{s.position_name}** ({s.member.display_name}): **{s.score}**" for s in scores]
+            embed.add_field(
+                name=f"{rank_labels[rank]} — {team_info[team_key]}",
+                value="\n".join(lines) if lines else "*No scores*",
+                inline=True
+            )
+            # Add spacer after every 2 fields to keep layout clean
+            if rank % 2 == 0 and rank < 4:
+                embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        embed.set_footer(text=f"Judged by {bp_ballot.judge.display_name}")
+        return embed
 
     @staticmethod
     def create_coin_toss_result_embed(debate_round, result: str, winner_team: str, gov_call: str, opp_call: str, winning_motion: str) -> discord.Embed:
