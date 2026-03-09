@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 from enum import Enum
 import discord
 
@@ -8,15 +8,52 @@ class TeamType(Enum):
     """Team composition types."""
     FULL = "full"  # 3 debaters
     IRON = "iron"  # 2 debaters
-    SOLO = "solo"  # 1 debater
+    SOLO = "solo"  # 1 debater (1v1 format)
 
 
 class RoundType(Enum):
     """Types of debate rounds based on participant count."""
-    PM_LO = "pm_lo"  # 3 people: 1v1 + 1 judge (PM-LO Speech)
+    PM_LO = "pm_lo"              # 3 people: 1v1 + 1 judge
     DOUBLE_IRON = "double_iron"  # 5 people: 2v2 + 1 judge
     SINGLE_IRON = "single_iron"  # 6 people: 3v2 or 2v3 + 1 judge
-    STANDARD = "standard"  # 7+ people: 3v3 + judges
+    STANDARD = "standard"        # 7+ people: 3v3 + judges
+    BP = "bp"                    # 9+ people: 8 debaters (4 teams of 2) + 1+ judges
+
+
+class FormatType(Enum):
+    """Debate format types."""
+    ONE_V_ONE = "1v1"
+    AP = "ap"
+    BP = "bp"
+
+
+@dataclass
+class Party:
+    """Represents a party of debaters who want to be on the same team."""
+    host: discord.Member
+    members: List[discord.Member] = field(default_factory=list)  # includes host, max 3
+
+    def __post_init__(self):
+        if self.host not in self.members:
+            self.members.insert(0, self.host)
+
+    def add_member(self, member: discord.Member) -> bool:
+        """Add a member to the party. Returns False if full or already in party."""
+        if len(self.members) >= 3 or member in self.members:
+            return False
+        self.members.append(member)
+        return True
+
+    def remove_member(self, member: discord.Member) -> bool:
+        """Remove a non-host member from the party."""
+        if member in self.members and member != self.host:
+            self.members.remove(member)
+            return True
+        return False
+
+    @property
+    def size(self) -> int:
+        return len(self.members)
 
 
 @dataclass
@@ -28,7 +65,6 @@ class DebateTeam:
 
     @property
     def max_size(self) -> int:
-        """Get the max team size based on team type."""
         if self.team_type == TeamType.FULL:
             return 3
         elif self.team_type == TeamType.IRON:
@@ -58,12 +94,13 @@ class DebateTeam:
         """Get position name for a team member by index."""
         from config import Config
 
+        side = "gov" if self.team_name == "Government" else "opp"
         if self.team_type == TeamType.FULL:
-            positions = Config.TEAM_POSITIONS["gov" if self.team_name == "Government" else "opp"]
+            positions = Config.TEAM_POSITIONS[side]
         elif self.team_type == TeamType.IRON:
-            positions = Config.IRON_TEAM_POSITIONS["gov" if self.team_name == "Government" else "opp"]
+            positions = Config.IRON_TEAM_POSITIONS[side]
         else:  # SOLO
-            positions = Config.PM_LO_POSITIONS["gov" if self.team_name == "Government" else "opp"]
+            positions = Config.PM_LO_POSITIONS[side]
 
         return positions[index] if index < len(positions) else f"Speaker {index + 1}"
 
@@ -107,6 +144,106 @@ class JudgePanel:
 
 
 @dataclass
+class SpeakerScore:
+    """A single speaker's score in a ballot."""
+    member: discord.Member
+    position_name: str  # e.g. "Prime Minister", "Leader of Opposition"
+    score: int  # 50-100
+
+
+@dataclass
+class Ballot:
+    """A judge's ballot for a round."""
+    judge: discord.Member
+    winner: str  # "Government" or "Opposition"
+    gov_scores: List[SpeakerScore] = field(default_factory=list)
+    opp_scores: List[SpeakerScore] = field(default_factory=list)
+    gov_reply: Optional[SpeakerScore] = None  # Reply speech score (25-50), AP only
+    opp_reply: Optional[SpeakerScore] = None
+
+    @property
+    def gov_total(self) -> int:
+        total = sum(s.score for s in self.gov_scores)
+        if self.gov_reply:
+            total += self.gov_reply.score
+        return total
+
+    @property
+    def opp_total(self) -> int:
+        total = sum(s.score for s in self.opp_scores)
+        if self.opp_reply:
+            total += self.opp_reply.score
+        return total
+
+    def validate(self) -> Optional[str]:
+        """Returns error message if invalid, None if valid."""
+        for s in self.gov_scores + self.opp_scores:
+            if not (50 <= s.score <= 100):
+                return f"Score for {s.position_name} must be between 50-100 (got {s.score})."
+        for reply, side in [(self.gov_reply, "Government"), (self.opp_reply, "Opposition")]:
+            if reply:
+                if not (25 <= reply.score <= 50):
+                    return f"Reply score for {side} must be between 25-50 (got {reply.score})."
+                if "Whip" in reply.position_name:
+                    return f"{side} reply speaker cannot be a Whip."
+        if self.winner == "Government" and self.gov_total <= self.opp_total:
+            return f"Government won but their total ({self.gov_total}) is not higher than Opposition ({self.opp_total})."
+        if self.winner == "Opposition" and self.opp_total <= self.gov_total:
+            return f"Opposition won but their total ({self.opp_total}) is not higher than Government ({self.gov_total})."
+        return None
+
+
+@dataclass
+class JudgeRating:
+    """A debater's rating of a judge."""
+    debater: discord.Member
+    score: int  # 1-10
+    feedback: Optional[str] = None
+
+
+@dataclass
+class BallotDraft:
+    """Accumulates ballot data across the multi-step ballot flow."""
+    ballot_view: Any  # SubmitBallotView reference
+    debate_round: 'DebateRound'
+    judge: discord.Member
+    winner: Optional[str] = None
+    gov_assignments: dict = field(default_factory=dict)  # position_name -> Member
+    gov_reply_member: Optional[discord.Member] = None
+    opp_assignments: dict = field(default_factory=dict)
+    opp_reply_member: Optional[discord.Member] = None
+    gov_scores: List[SpeakerScore] = field(default_factory=list)
+    gov_reply_score: Optional[SpeakerScore] = None
+
+
+@dataclass
+class BPBallot:
+    """A judge's ballot for a BP round (rankings + per-speaker scores)."""
+    judge: discord.Member
+    rankings: dict  # "og"/"oo"/"cg"/"co" → rank (1-4)
+    team_scores: dict  # "og"/"oo"/"cg"/"co" → List[SpeakerScore]
+
+    def validate(self) -> Optional[str]:
+        ranks = list(self.rankings.values())
+        if sorted(ranks) != [1, 2, 3, 4]:
+            return "Rankings must assign each of 1st, 2nd, 3rd, 4th exactly once."
+        return None
+
+
+@dataclass
+class BPBallotDraft:
+    """Accumulates BP ballot data across the multi-step ballot flow."""
+    ballot_view: Any  # SubmitBallotView reference
+    debate_round: 'DebateRound'
+    judge: discord.Member
+    rankings: dict = field(default_factory=dict)           # "og"/"oo"/"cg"/"co" → rank (1-4)
+    og_scores: List['SpeakerScore'] = field(default_factory=list)
+    oo_scores: List['SpeakerScore'] = field(default_factory=list)
+    cg_scores: List['SpeakerScore'] = field(default_factory=list)
+    co_scores: List['SpeakerScore'] = field(default_factory=list)
+
+
+@dataclass
 class DebateRound:
     """Represents a complete debate round."""
     round_id: int
@@ -115,15 +252,52 @@ class DebateRound:
     opposition: DebateTeam
     judges: JudgePanel
     motion: Optional[str] = None
+    infoslide: Optional[str] = None
+    motions: List[str] = field(default_factory=list)        # AP: the 3 entered motions (pre-veto)
+    motion_infoslides: List[Optional[str]] = field(default_factory=list)  # AP: per-motion infoslides
+    gov_veto: Optional[List[int]] = None                    # [rank_m0, rank_m1, rank_m2] 1=best, 3=worst
+    opp_veto: Optional[List[int]] = None
+    debated_motion_index: Optional[int] = None              # index into motions; set after veto resolves
     confirmed: bool = False
+    format_label: Optional[str] = None
+    category_id: Optional[int] = None
+    channel_ids: dict = field(default_factory=dict)
+    ballot: Optional['Ballot'] = None
+    bp_ballot: Optional['BPBallot'] = None
+    cg: Optional['DebateTeam'] = None                       # BP: Closing Government
+    co: Optional['DebateTeam'] = None                       # BP: Closing Opposition
+    judge_ratings: List['JudgeRating'] = field(default_factory=list)
+    rated_debater_ids: set = field(default_factory=set)
+    observers: List[discord.Member] = field(default_factory=list)
 
     def get_all_participants(self) -> List[discord.Member]:
         """Get all participants in the round."""
         participants = []
         participants.extend(self.government.members)
         participants.extend(self.opposition.members)
+        if self.cg:
+            participants.extend(self.cg.members)
+        if self.co:
+            participants.extend(self.co.members)
         participants.extend(self.judges.get_all_judges())
         return participants
+
+    def get_original_queue_roles(self) -> dict:
+        """Map each member to 'debater' or 'judge' for re-queuing on cancel."""
+        roles = {}
+        for member in self.government.members:
+            roles[member] = "debater"
+        for member in self.opposition.members:
+            roles[member] = "debater"
+        if self.cg:
+            for member in self.cg.members:
+                roles[member] = "debater"
+        if self.co:
+            for member in self.co.members:
+                roles[member] = "debater"
+        for judge in self.judges.get_all_judges():
+            roles[judge] = "judge"
+        return roles
 
     def swap_members(self, member1: discord.Member, member2: discord.Member) -> bool:
         """Swap positions of two members in the round."""
@@ -185,12 +359,10 @@ class DebateRound:
 
 @dataclass
 class MatchmakingQueue:
-    """Manages a named matchmaking queue with separate debater and judge queues."""
-    name: str = ""
-    host: Optional[discord.Member] = None
+    """Manages the matchmaking queue with separate debater and judge queues."""
+    format_type: FormatType = FormatType.AP
     debaters: List[discord.Member] = field(default_factory=list)
     judges: List[discord.Member] = field(default_factory=list)
-    lobby_message: Optional[discord.Message] = None
 
     def add_debater(self, user: discord.Member) -> bool:
         """Add a user to the debater queue."""
@@ -254,68 +426,35 @@ class MatchmakingQueue:
         """Get the number of judges in queue."""
         return len(self.judges)
 
-    def get_threshold_type(self) -> Optional[RoundType]:
-        """Determine the round type based on current queue composition."""
+    def get_threshold_type(self, max_party_size: int = 1) -> Optional[RoundType]:
+        """Determine the round type based on current queue composition.
+
+        Args:
+            max_party_size: Size of the largest party in queue. A party of 3
+                cannot fit in a double iron (2v2) round, so we skip it.
+        """
         debaters = self.debater_count()
         judges = self.judge_count()
 
-        # PM_LO: 2 debaters + 1 judge (1v1)
-        if debaters == 2 and judges >= 1:
-            return RoundType.PM_LO
-        # PM_LO also applies for 3 debaters + 1 judge — but prefer DOUBLE_IRON at 4
-        elif debaters == 3 and judges >= 1:
-            return RoundType.PM_LO
-        # DOUBLE_IRON: 4 debaters + 1 judge (2v2)
-        elif debaters == 4 and judges >= 1:
-            return RoundType.DOUBLE_IRON
-        # SINGLE_IRON: 5 debaters + 1 judge (3v2 or 2v3)
-        elif debaters == 5 and judges >= 1:
-            return RoundType.SINGLE_IRON
-        # STANDARD: 6+ debaters + 1+ judges (3v3)
-        elif debaters >= 6 and judges >= 1:
-            return RoundType.STANDARD
-        return None
-
-
-class LobbyManager:
-    """Manages multiple named lobbies."""
-
-    def __init__(self):
-        self.lobbies: dict[str, MatchmakingQueue] = {}
-
-    def create_lobby(self, name: str, host: discord.Member) -> Optional[MatchmakingQueue]:
-        """Create a new named lobby. Returns None if name already taken."""
-        key = name.lower()
-        if key in self.lobbies:
+        if self.format_type == FormatType.ONE_V_ONE:
+            # 1v1: 2 debaters + 1 judge
+            if debaters >= 2 and judges >= 1:
+                return RoundType.PM_LO
             return None
-        lobby = MatchmakingQueue(name=name, host=host)
-        self.lobbies[key] = lobby
-        return lobby
-
-    def get_lobby(self, name: str) -> Optional[MatchmakingQueue]:
-        """Get a lobby by name (case-insensitive)."""
-        return self.lobbies.get(name.lower())
-
-    def remove_lobby(self, name: str) -> bool:
-        """Remove a lobby by name. Returns True if removed."""
-        key = name.lower()
-        if key in self.lobbies:
-            del self.lobbies[key]
-            return True
-        return False
-
-    def get_user_lobbies(self, user: discord.Member) -> List[MatchmakingQueue]:
-        """Get all lobbies a user is part of (as participant or host)."""
-        result = []
-        for lobby in self.lobbies.values():
-            if lobby.host == user or lobby.is_in_queue(user):
-                result.append(lobby)
-        return result
-
-    def all_lobbies(self) -> List[MatchmakingQueue]:
-        """Get all active lobbies."""
-        return list(self.lobbies.values())
-
-    def lobby_names(self) -> List[str]:
-        """Get all active lobby names."""
-        return [lobby.name for lobby in self.lobbies.values()]
+        elif self.format_type == FormatType.BP:
+            # BP: 8 debaters + 1 judge (4 teams of 2)
+            if debaters >= 8 and judges >= 1:
+                return RoundType.BP
+            return None
+        else:
+            # AP format — check from largest round type down
+            # STANDARD: 6+ debaters + 1+ judges (3v3)
+            if debaters >= 6 and judges >= 1:
+                return RoundType.STANDARD
+            # SINGLE_IRON: 5 debaters + 1 judge (3v2 or 2v3)
+            if debaters >= 5 and judges >= 1:
+                return RoundType.SINGLE_IRON
+            # DOUBLE_IRON: 4 debaters + 1 judge (2v2) — only if no party > 2
+            if debaters >= 4 and judges >= 1 and max_party_size <= 2:
+                return RoundType.DOUBLE_IRON
+            return None

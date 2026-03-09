@@ -13,15 +13,15 @@ class Config:
     GUILD_ID = int(os.getenv("GUILD_ID", 0))
 
     # Channel IDs
-    HOST_CHANNEL_ID = int(os.getenv("HOST_CHANNEL_ID", 0))
     LOBBY_CHANNEL_ID = int(os.getenv("LOBBY_CHANNEL_ID", 0))
-
-    # Role IDs (Optional)
-    _host_role_env = os.getenv("HOST_ROLE_ID", "")
-    HOST_ROLE_ID = int(_host_role_env) if _host_role_env and _host_role_env.strip() and _host_role_env.strip().isdigit() else None
 
     # Bot Settings
     BOT_PREFIX = "!"
+
+    # Prep Time (seconds)
+    PREP_TIME_1V1 = 15 * 60   # 15 minutes
+    PREP_TIME_AP = 30 * 60    # 30 minutes
+    PREP_TIME_BP = 15 * 60    # 15 minutes
 
     # Debate Settings
     TEAM_POSITIONS = {
@@ -39,6 +39,12 @@ class Config:
         "opp": ["Leader of Opposition"]
     }
 
+    # BP position names per team (index 0 = first speaker, index 1 = second speaker)
+    BP_OG_POSITIONS = ["Prime Minister", "Deputy Prime Minister"]
+    BP_OO_POSITIONS = ["Leader of Opposition", "Deputy Leader of Opposition"]
+    BP_CG_POSITIONS = ["Member of Government", "Government Whip"]
+    BP_CO_POSITIONS = ["Member of Opposition", "Opposition Whip"]
+
     JUDGE_ROLES = ["Chair", "Panelist"]
 
     @classmethod
@@ -48,7 +54,5 @@ class Config:
             raise ValueError("DISCORD_TOKEN is required in .env file")
         if not cls.GUILD_ID:
             raise ValueError("GUILD_ID is required in .env file")
-        if not cls.HOST_CHANNEL_ID:
-            raise ValueError("HOST_CHANNEL_ID is required in .env file")
         if not cls.LOBBY_CHANNEL_ID:
             raise ValueError("LOBBY_CHANNEL_ID is required in .env file")
