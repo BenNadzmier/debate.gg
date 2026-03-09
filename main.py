@@ -30,7 +30,8 @@ class DebateBot(discord.Bot):
         self.initial_extensions = [
             'cogs.matchmaking',
             'cogs.rounds',
-            'cogs.welcome'
+            'cogs.welcome',
+            'cogs.stats'
         ]
 
         self.cogs_loaded = False
@@ -84,6 +85,10 @@ class DebateBot(discord.Bot):
                 self.commands_cleared = True
             except Exception as e:
                 logger.error(f"Error syncing commands: {e}", exc_info=True)
+
+        # Initialize database
+        from utils.database import init_db
+        await init_db()
 
         logger.info("Bot is ready! Waiting for commands...")
 
