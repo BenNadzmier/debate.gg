@@ -52,9 +52,14 @@ class DebateBot(discord.Bot):
         logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logger.info(f"Connected to {len(self.guilds)} guild(s)")
 
-        # List all guilds
+        # List all guilds and leave any that aren't the configured one
         for guild in self.guilds:
             logger.info(f"  - {guild.name} (ID: {guild.id})")
+        if Config.GUILD_ID:
+            for guild in list(self.guilds):
+                if guild.id != Config.GUILD_ID:
+                    logger.info(f"Leaving unauthorized guild: {guild.name} (ID: {guild.id})")
+                    await guild.leave()
 
         # Check if we're in the configured guild
         if Config.GUILD_ID:
@@ -99,6 +104,12 @@ class DebateBot(discord.Bot):
                 name="debate rounds | /queue"
             )
         )
+
+    async def on_guild_join(self, guild):
+        """Auto-leave any guild that isn't the configured one."""
+        if Config.GUILD_ID and guild.id != Config.GUILD_ID:
+            logger.info(f"Auto-leaving unauthorized guild: {guild.name} (ID: {guild.id})")
+            await guild.leave()
 
     async def on_application_command_error(self, ctx: discord.ApplicationContext, error: discord.DiscordException):
         """Handle application command errors."""
