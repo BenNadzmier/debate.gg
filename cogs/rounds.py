@@ -2230,6 +2230,13 @@ class Rounds(commands.Cog):
 
         logger.info(f"Ballot finalized for round {debate_round.round_id}")
 
+        # Log round to database
+        try:
+            from utils.database import log_round
+            debate_round.db_round_id = await log_round(debate_round)
+        except Exception as e:
+            logger.error(f"Failed to log round {debate_round.round_id} to database: {e}")
+
     async def finalize_bp_ballot(
         self,
         interaction: discord.Interaction,
@@ -2286,6 +2293,13 @@ class Rounds(commands.Cog):
 
         logger.info(f"BP ballot finalized for round {debate_round.round_id}")
 
+        # Log round to database
+        try:
+            from utils.database import log_round
+            debate_round.db_round_id = await log_round(debate_round)
+        except Exception as e:
+            logger.error(f"Failed to log BP round {debate_round.round_id} to database: {e}")
+
     async def send_judge_ratings(self, debate_round: DebateRound):
         """Send aggregated debater ratings to the judge."""
         judge = debate_round.bp_ballot.judge if debate_round.bp_ballot else debate_round.ballot.judge
@@ -2295,6 +2309,14 @@ class Rounds(commands.Cog):
         except discord.Forbidden:
             pass
         logger.info(f"Sent aggregated judge ratings for round {debate_round.round_id}")
+
+        # Log judge ratings to database
+        if debate_round.db_round_id is not None:
+            try:
+                from utils.database import log_judge_ratings
+                await log_judge_ratings(debate_round.db_round_id, debate_round)
+            except Exception as e:
+                logger.error(f"Failed to log judge ratings for round {debate_round.round_id}: {e}")
 
     async def run_prep_timer(self, guild: discord.Guild, debate_round: DebateRound, text_channel: discord.TextChannel, duration: int):
         """Run the prep timer and auto-move debaters when done."""

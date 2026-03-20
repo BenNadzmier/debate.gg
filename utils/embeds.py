@@ -885,3 +885,71 @@ class EmbedBuilder:
             description=desc,
             color=EmbedBuilder.COLOR_SUCCESS
         )
+
+    @staticmethod
+    def create_stats_embed(member: discord.Member, stats: dict) -> discord.Embed:
+        """Create embed displaying a participant's debate statistics."""
+        embed = discord.Embed(
+            title=f"Stats — {member.display_name}",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        debater = stats.get("debater")
+        judge = stats.get("judge")
+
+        if debater:
+            # Record line
+            parts = []
+            if debater["wins"] or debater["losses"]:
+                parts.append(f"**W/L:** {debater['wins']}-{debater['losses']}")
+            if debater.get("bp_rounds"):
+                parts.append(f"**BP Rounds:** {debater['bp_rounds']}")
+                parts.append(f"**Avg BP Rank:** {debater['avg_bp_rank']}")
+            record_line = " | ".join(parts) if parts else ""
+
+            lines = [f"**Rounds:** {debater['total_rounds']}"]
+            if record_line:
+                lines.append(record_line)
+            if debater["avg_score"]:
+                lines.append(f"**Avg Speaker Score:** {debater['avg_score']}")
+
+            # BP placement breakdown
+            if debater.get("bp_placements"):
+                bp = debater["bp_placements"]
+                bp_line = f"1st: {bp.get(1,0)} | 2nd: {bp.get(2,0)} | 3rd: {bp.get(3,0)} | 4th: {bp.get(4,0)}"
+                lines.append(f"**BP Placements:** {bp_line}")
+
+            # Formats
+            if debater.get("formats"):
+                fmt_parts = [f"{k.upper()}: {v}" for k, v in debater["formats"].items()]
+                lines.append(f"**Formats:** {' | '.join(fmt_parts)}")
+
+            # Top positions
+            if debater.get("positions"):
+                pos_parts = [f"{name} ({count})" for name, count in list(debater["positions"].items())[:5]]
+                lines.append(f"**Positions:** {', '.join(pos_parts)}")
+
+            embed.add_field(
+                name="Debater Stats",
+                value="\n".join(lines),
+                inline=False
+            )
+
+        if judge:
+            lines = [f"**Rounds Judged:** {judge['rounds_judged']}"]
+            if judge["avg_rating"]:
+                lines.append(f"**Avg Rating:** {judge['avg_rating']}/10 ({judge['total_ratings']} ratings)")
+            if judge.get("formats"):
+                fmt_parts = [f"{k.upper()}: {v}" for k, v in judge["formats"].items()]
+                lines.append(f"**Formats:** {' | '.join(fmt_parts)}")
+
+            embed.add_field(
+                name="Judge Stats",
+                value="\n".join(lines),
+                inline=False
+            )
+
+        if not debater and not judge:
+            embed.description = "No stats available."
+
+        return embed
